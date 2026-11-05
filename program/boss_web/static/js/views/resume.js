@@ -1,0 +1,897 @@
+/** 简历页：一份简历两副面孔——原文与结构化解析，共用同一套章节脊柱。 */
+
+import { api } from "../api.js";
+import { toast, escapeHtml, fmtTime, taskPanel } from "../ui.js";
+import { pageHeader } from '../panel_ui.js';
+import { renderRevise } from './resume_revise.js';
+import { mountStageInputs } from './stage_inputs.js';
+
+/** 固定模板八段（与 boss_web/services/resume_parser.py 的 TEMPLATE_FIELDS 对齐）。 */
+const SECTIONS = [
+  { key: "basic", label: "基本信息", sec: "基本信息" },
+  { key: "intent", label: "求职意向", sec: "求职意向" },
+  { key: "work", label: "工作经历", sec: "工作经历", kind: "list" },
+  { key: "project", label: "项目经历", sec: "项目经历", kind: "list" },
+  { key: "education", label: "教育经历", sec: "教育经历", kind: "list" },
+  { key: "skills", label: "技能标签", sec: "技能标签", kind: "list" },
+  { key: "self_evaluation", label: "自我评价", sec: "自我评价", kind: "text" },
+  { key: "summary", label: "摘要", sec: "摘要", kind: "text" },
+];
+
+/** 切走再切回时记住用户选的那份简历。 */
+let lastResumeId = "";
+
+/** 全页唯一一个画出来的图标：上传。 */
+const ICO_UPLOAD = `<svg class="rs-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+  stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M12 15.5V4.5"/><path d="m7.5 9 4.5-4.5L16.5 9"/><path d="M4.5 16v2.5a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5V16"/></svg>`;
+
+/**
+ * 原文自己的标题 → 模板八段。整词判断，不用单字前缀——后端 SECTION_ALIASES
+ * 里那个 "项目" 会把「项目管理与技术架构」也算成项目经历。
+ */
+const RAW_ALIASES = {
+  基本信息: ["基本信息", "个人信息", "联系信息", "联系方式"],
+  求职意向: ["求职意向", "求职目标", "期望岗位", "求职期望"],
+  工作经历: ["工作经历", "工作经验", "职业经历", "工作履历", "工作与实习", "实习经历"],
+  项目经历: ["项目经历", "项目经验"],
+  教育经历: ["教育经历", "教育背景"],
+  技能标签: ["技能标签", "技能清单", "专业技能", "技术栈"],
+  自我评价: ["自我评价", "个人总结", "自我介绍", "个人评价"],
+};
+
+/** 标题归一化：去掉空白与常见装饰符号。 */
+function normHeading(text) {
+  return String(text || "").replace(/[\s:：*#｜|·—–\-、,，。.]+/g, "");
+}
+
+/** 文件里的标题认到模板哪一段（认不出就空着）。 */
+function rawPart(head) {
+  const n = normHeading(head);
+  if (!n) return "";
+  for (const sec of Object.keys(RAW_ALIASES)) {
+    if (RAW_ALIASES[sec].some((a) => n.includes(normHeading(a)))) return sec;
+  }
+  return "";
+}
+
+let blockCache = { key: "", blocks: [] };
+
+/**
+ * 原文按它自己的标题切块：一块一个标题，正文逐字留着。
+ *
+ * @param {string} raw 简历原文
+ * @returns {Array<{i: number, head: string, level: number, text: string, part: string}>} 块列表，`part` 为认出的模板段
+ */
+function rawBlocks(raw) {
+  const text = String(raw || "");
+  const key = `${text.length}:${text.slice(0, 32)}`;
+  if (blockCache.key === key) return blockCache.blocks;
+
+  const out = [];
+  let cur = { head: "", level: 0, body: [] };
+  text.split("\n").forEach((line) => {
+    const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    if (m) {
+      out.push(cur);
+      cur = { head: m[2], level: m[1].length, body: [] };
+    } else {
+      cur.body.push(line);
+    }
+  });
+  out.push(cur);
+  blockCache = {
+    key,
+    blocks: out
+      .map((b, i) => ({
+        i,
+        head: b.head,
+        level: b.level,
+        text: b.body.join("\n").replace(/^\n+|\n+$/g, ""),
+      }))
+      .filter((b) => b.head || b.text)
+      .map((b) => ({ ...b, part: rawPart(b.head) })),
+  };
+  return blockCache.blocks;
+}
+
+/**
+ * 渲染简历页：上传 / 选库、LLM 解析、原文与解析结果双面展示。
+ *
+ * @param {HTMLElement} root 挂载容器
+ * @returns {Promise<() => void>} 卸载时取消滚动监听的动画帧
+ */
+export async function renderResume(root) {
+  root.innerHTML = `
+    ${pageHeader('01 / PROFILE', '简历与资料', '核对真实经历与当前采用的版本。可以保留原样继续，也可以和 AI 优化，先看草稿再决定。', '<a class="btn sm" href="#/candidate">核对已采用事实 →</a>')}
+
+    <section class="card rs-bar" id="rs-bar">
+      <div class="rs-lib" id="rs-lib"></div>
+      <div class="rs-bar-act">
+        <span class="rs-fresh" id="rs-fresh"></span>
+        <button class="btn" id="btn-upload">${ICO_UPLOAD}上传简历</button>
+        <button class="btn primary" id="btn-confirm-parse">确认采用解析建议</button>
+        <details class="rs-manage"><summary>管理与解析 ▾</summary><div class="btn-row"><button class="btn" id="btn-parse">重新解析</button><button class="btn danger" id="btn-del">删除</button></div></details>
+      </div>
+      <input type="file" id="file" accept=".docx,.pdf,.md,.markdown,.txt" hidden>
+    </section>
+
+    <div id="resume-inputs"></div>
+    <section class="resume-path"><div><h3>当前简历与优化稿</h3><p>原文、解析与采用状态分别保留。优化稿需采用后才用于后续流程。</p></div><button type="button" class="btn sm ghost" id="rs-open-optimize">查看基础优化 →</button></section>
+
+    <div id="rs-task" class="mb-16"></div>
+
+    <div class="rs-bench" id="rs-bench">
+      <aside class="rs-rail" id="rs-rail" aria-label="章节目录">
+        <div class="rs-rail-head mono" id="rs-rail-head"></div>
+        <nav class="rs-toc" id="rs-toc"></nav>
+      </aside>
+
+      <section class="card rs-face" id="rs-face">
+        <div class="rs-face-head">
+          <div class="rs-switch" role="tablist" aria-label="查看原文或解析结果">
+            <button class="rs-switch-btn" id="sw-parsed" role="tab" aria-selected="false">AI 解析建议</button>
+            <button class="rs-switch-btn is-on" id="sw-source" role="tab" aria-selected="true">原文</button>
+          </div>
+          <div class="rs-face-meta mono" id="rs-meta"></div>
+        </div>
+        <div class="rs-face-body scroll-y" id="rs-body" tabindex="-1"></div>
+      </section>
+    </div>
+  `;
+
+  const $ = (id) => root.querySelector("#" + id);
+  const bar = $("rs-bar");
+  const body = $("rs-body");
+  const fileInput = $("file");
+
+  let resumes = [];
+  let current = null;
+  let llmCfg = null;
+  let face = "source";
+  let activeResumeId = "";
+  let parsing = false;
+  let activeSec = SECTIONS[0].sec;
+  let rawHas = new Set();
+  const scrollTops = { parsed: 0, source: 0 };
+  let spyFrame = 0;
+
+  const parsePanel = taskPanel({ title: "LLM 解析", stopLabel: "" });
+  $("rs-task").appendChild(parsePanel.el);
+  $("rs-task").hidden = true;
+  parsePanel.update({ status: "idle", percent: 0 });
+
+  /**
+   * 刷 LLM 解析进度面板。
+   *
+   * @param {string} state 面板状态（idle / running / done / error）
+   * @param {string} detail 当前说明文案
+   * @param {number} percent 进度百分比
+   */
+  function paintParse(state, detail, percent) {
+    parsePanel.update({
+      status: state,
+      percent,
+      current: detail,
+      counts: [],
+    });
+    // 只在真的在解析（或出错）时占位置，平时不显示这块空面板。
+    $("rs-task").hidden = state === "done";
+  }
+
+  /** 秒级时间戳 → 「刚刚 / N 分钟前 / …」；无值显示「—」。 */
+  function relTime(ts) {
+    if (!ts) return "—";
+    const d = Math.floor(Date.now() / 1000 - ts);
+    if (d < 60) return "刚刚";
+    if (d < 3600) return `${Math.floor(d / 60)} 分钟前`;
+    if (d < 86400) return `${Math.floor(d / 3600)} 小时前`;
+    if (d < 86400 * 30) return `${Math.floor(d / 86400)} 天前`;
+    return fmtTime(ts).slice(0, 10);
+  }
+
+  /**
+   * 这一段的识别情况：目录上那个点与右侧读数的唯一来源。
+   *
+   * @param {{key: string, kind?: string}} s 模板段定义
+   * @returns {{state: "none"|"on"|"off", note: string}} 点状态与短读数
+   */
+  function coverage(s) {
+    const d = (current && current.llm && current.llm.data) || null;
+    if (!d) return { state: "none", note: "未解析" };
+    const v = d[s.key];
+    if (s.kind === "list" || Array.isArray(v)) {
+      const n = Array.isArray(v) ? v.length : 0;
+      return { state: n ? "on" : "off", note: n ? `${n} 条` : "空" };
+    }
+    if (s.key === "basic") {
+      const filled = ["name", "phone", "email", "city"].filter((k) => (v || {})[k]).length;
+      return { state: filled ? "on" : "off", note: filled ? `${filled}/4` : "空" };
+    }
+    if (s.key === "intent") {
+      const filled = ["position", "city", "salary"].filter((k) => (v || {})[k]).length;
+      return { state: filled ? "on" : "off", note: filled ? `${filled}/3` : "空" };
+    }
+    const text = String(v || "");
+    return { state: text ? "on" : "off", note: text ? `${text.length} 字` : "空" };
+  }
+
+  /**
+   * 这一面里有没有这一段的落点——没有就不给点，免得点了没反应。
+   *
+   * 解析面里姓名与意向两段恒在场，其余段有内容才渲染。
+   *
+   * @param {string} sec 章节 key
+   * @param {"parsed"|"source"} onFace 哪一面
+   * @returns {boolean} 有落点为 `true`
+   */
+  function targetExists(sec, onFace) {
+    if (onFace === "source") return rawHas.has(sec);
+    const s = SECTIONS.find((x) => x.sec === sec);
+    if (!s || !(current && current.llm && current.llm.data)) return false;
+    return s.key === "basic" || s.key === "intent" || coverage(s).state === "on";
+  }
+
+  /** 画左侧章节目录（模板八段 + 模板没接住的原文章节）。 */
+  function renderToc() {
+    const d = current && current.llm && current.llm.data;
+    const captured = SECTIONS.filter((s) => coverage(s).state === "on").length;
+    const head = $("rs-rail-head");
+    head.textContent = !current ? "8 段模板" : !d ? "尚未解析" : `${captured}/8 段已识别`;
+    head.classList.toggle("is-ok", !!d && captured === SECTIONS.length);
+
+    const rows = SECTIONS.map((s) => {
+      const c = coverage(s);
+      const on = s.sec === activeSec && face === "parsed";
+      return `
+        <button class="rs-toc-row${on ? " is-active" : ""}"
+                data-sec="${escapeHtml(s.sec)}" data-face="parsed"
+                data-has="${targetExists(s.sec, "parsed") ? 1 : 0}">
+          <i class="rs-dot" data-state="${c.state}"></i>
+          <span class="rs-toc-label" title="${escapeHtml(s.label)}">${escapeHtml(s.label)}</span>
+          <span class="rs-toc-note mono">${escapeHtml(c.note)}</span>
+        </button>`;
+    }).join("");
+
+    const orphans = rawBlocks(current && current.raw).filter((b) => !b.part && b.level === 2);
+    const orphanRows = orphans.length
+      ? `<div class="rs-toc-sep">模板没接住</div>
+         ${orphans
+           .map(
+             (b) => `
+          <button class="rs-toc-row is-quiet" data-sec="raw-${b.i}" data-face="source" data-has="1">
+            <i class="rs-dot" data-state="none"></i>
+            <span class="rs-toc-label" title="${escapeHtml(b.head)}">${escapeHtml(b.head)}</span>
+          </button>`
+           )
+           .join("")}`
+      : "";
+
+    $("rs-toc").innerHTML = rows + orphanRows;
+    $("rs-toc").querySelectorAll(".rs-toc-row").forEach((b) => {
+      b.addEventListener("click", () => {
+        activeSec = b.dataset.sec;
+        if (b.dataset.face !== face) flipTo(b.dataset.face, activeSec);
+        else jumpTo(activeSec);
+        paintToc();
+      });
+    });
+    paintToc();
+  }
+
+  /** 同步目录行高亮与置灰（两个面共用同一套锚点）。 */
+  function paintToc() {
+    root.querySelectorAll(".rs-toc-row").forEach((b) => {
+      b.classList.toggle("is-active", b.dataset.sec === activeSec);
+      b.classList.toggle("is-dead", b.dataset.has === "0");
+    });
+  }
+
+  /** 把某个章节滚到阅读区顶部（两个面共用同一套锚点，翻面落回同一段）。 */
+  function jumpTo(sec, smooth = true) {
+    const target = body.querySelector(`[data-sec="${sec}"], [data-part="${sec}"]`);
+    if (target) target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
+  }
+
+  /** 滚动时把目录高亮跟到视口顶部那段。 */
+  function spy() {
+    const marks = [...body.querySelectorAll("[data-sec]")];
+    if (!marks.length) return;
+    const top = body.getBoundingClientRect().top + 12;
+    let hit = marks[0];
+    for (const m of marks) {
+      if (m.getBoundingClientRect().top <= top) hit = m;
+    }
+    const key = hit.dataset.part || hit.dataset.sec;
+    if (key !== activeSec && root.querySelector(`.rs-toc-row[data-sec="${key}"]`)) {
+      activeSec = key;
+      paintToc();
+    }
+  }
+
+  body.addEventListener("scroll", () => {
+    if (spyFrame) return;
+    spyFrame = requestAnimationFrame(() => {
+      spyFrame = 0;
+      spy();
+    });
+  });
+
+  /**
+   * 切到原文 / 解析结果另一面，可指定落点章节。
+   *
+   * @param {"parsed"|"source"} next 目标面
+   * @param {string} [sec] 切过去后要对准的章节
+   */
+  function flipTo(next, sec) {
+    if (next === face) return;
+    scrollTops[face] = body.scrollTop;
+    face = next;
+    $("sw-parsed").classList.toggle("is-on", face === "parsed");
+    $("sw-source").classList.toggle("is-on", face === "source");
+    $("sw-parsed").setAttribute("aria-selected", String(face === "parsed"));
+    $("sw-source").setAttribute("aria-selected", String(face === "source"));
+    renderBody();
+    body.classList.remove("is-flip");
+    void body.offsetWidth;
+    body.classList.add("is-flip");
+    if (sec) {
+      jumpTo(sec, false);
+      activeSec = sec;
+    } else {
+      body.scrollTop = scrollTops[face] || 0;
+      activeSec = firstKey();
+    }
+    paintToc();
+  }
+
+  $("sw-parsed").addEventListener("click", () => flipTo("parsed"));
+  $("sw-source").addEventListener("click", () => flipTo("source"));
+
+  /**
+   * 渲染一条经历 / 教育条目。
+   *
+   * @param {{period?: string, highlights?: string[]}} e 条目数据
+   * @param {{titleOf: (x: *) => string, subOf: (x: *) => string}} opts 取标题与副标题
+   * @returns {string} HTML
+   */
+  function entryHtml(e, opts) {
+    const when = escapeHtml(e.period || "");
+    const title = opts.titleOf(e);
+    const sub = opts.subOf(e);
+    const lines = (e.highlights || [])
+      .map((h) => `<li>${escapeHtml(h)}</li>`)
+      .join("");
+    return `
+      <div class="rs-entry">
+        <div class="rs-when mono">${when || "—"}</div>
+        <div class="rs-what">
+          <div class="rs-what-head">
+            <strong>${escapeHtml(title)}</strong>
+            ${sub ? `<span class="rs-role">${escapeHtml(sub)}</span>` : ""}
+          </div>
+          ${lines ? `<ul class="rs-hl">${lines}</ul>` : ""}
+        </div>
+      </div>`;
+  }
+
+  /** 画解析结果面：姓名头 + 求职意向 + 各经历段。 */
+  function renderParsedFace(d) {
+    const basic = d.basic || {};
+    const intent = d.intent || {};
+    const who = basic.name || (current && current.title) || "未识别到姓名";
+    const contact = [basic.phone, basic.email, basic.city].filter(Boolean).join(" · ");
+
+    const intentPills = [
+      intent.position && `<span class="pill accent static">${escapeHtml(intent.position)}</span>`,
+      intent.city && `<span class="pill static">${escapeHtml(intent.city)}</span>`,
+      intent.salary && `<span class="pill static mono">${escapeHtml(intent.salary)}</span>`,
+    ]
+      .filter(Boolean)
+      .join("");
+
+    const missing = SECTIONS.filter((s) => coverage(s).state === "off").map((s) => s.label);
+
+    const sec = (s) => `<section class="rs-sec" data-sec="${escapeHtml(s.sec)}">`;
+
+    const work = (d.work || []).length
+      ? `${sec(SECTIONS[2])}<h3 class="rs-h3">工作经历</h3><div class="rs-timeline">
+           ${d.work
+             .map((w) =>
+               entryHtml(w, {
+                 titleOf: (x) => x.company || "—",
+                 subOf: (x) => x.title || "",
+               })
+             )
+             .join("")}
+         </div></section>`
+      : "";
+
+    const project = (d.project || []).length
+      ? `${sec(SECTIONS[3])}<h3 class="rs-h3">项目经历</h3><div class="rs-timeline">
+           ${d.project
+             .map((p) =>
+               entryHtml(p, {
+                 titleOf: (x) => x.name || "—",
+                 subOf: (x) => x.role || "",
+               })
+             )
+             .join("")}
+         </div></section>`
+      : "";
+
+    const education = (d.education || []).length
+      ? `${sec(SECTIONS[4])}<h3 class="rs-h3">教育经历</h3><div class="rs-timeline is-flat">
+           ${d.education
+             .map((e) =>
+               entryHtml(
+                 { ...e, highlights: [] },
+                 {
+                   titleOf: (x) => x.school || "—",
+                   subOf: (x) => [x.major, x.degree].filter(Boolean).join(" · "),
+                 }
+               )
+             )
+             .join("")}
+         </div></section>`
+      : "";
+
+    const skills = (d.skills || []).length
+      ? `${sec(SECTIONS[5])}<h3 class="rs-h3">技能标签</h3>
+         <div class="pills">${d.skills.map((s) => `<span class="chip">${escapeHtml(s)}</span>`).join("")}</div></section>`
+      : "";
+
+    const selfEval = d.self_evaluation
+      ? `${sec(SECTIONS[6])}<h3 class="rs-h3">自我评价</h3>
+         <p class="rs-prose">${escapeHtml(d.self_evaluation)}</p></section>`
+      : "";
+
+    const summary = d.summary
+      ? `${sec(SECTIONS[7])}<h3 class="rs-h3">摘要 <span class="rs-h3-note">匹配页读这段</span></h3>
+         <div class="rs-summary">${escapeHtml(d.summary)}</div></section>`
+      : "";
+
+    return `
+      <header class="rs-masthead" data-sec="基本信息">
+        <h2 class="rs-name">${escapeHtml(who)}</h2>
+        ${contact ? `<div class="rs-contact mono">${escapeHtml(contact)}</div>` : ""}
+        ${
+          missing.length
+            ? `<div class="rs-gap mono" title="模板里这些段落这次是空的">这次空着：${escapeHtml(missing.join(" / "))}</div>`
+            : `<div class="rs-gap is-ok mono">8/8 段全部识别</div>`
+        }
+      </header>
+
+      <section class="rs-sec" data-sec="求职意向">
+        <h3 class="rs-h3">求职意向</h3>
+        ${
+          intentPills
+            ? `<div class="pills">${intentPills}</div>`
+            : `<div class="muted" style="font-size:12.5px">没有期望岗位 / 城市 / 薪资——去「原文」看看是不是没写在简历里。</div>`
+        }
+      </section>
+
+      ${work}${project}${education}${skills}${selfEval}${summary}
+
+      <footer class="rs-foot">
+        <div>
+          <div class="rs-foot-title">这份解析可以拿去匹配了</div>
+          <div class="muted" style="font-size:12.5px">匹配页选这份简历，对库里的岗位跑人岗匹配。</div>
+        </div>
+        <a class="btn primary" href="#/match">去匹配这份简历</a>
+      </footer>
+    `;
+  }
+
+  /** 解析结果还没出来时的空骨架：把「会识别出哪八段」先摆给用户看。 */
+  function renderSkeleton(note) {
+    return `
+      <div class="rs-skel">
+        <div class="rs-skel-top">
+          <div class="rs-sk rs-sk-name"></div>
+          <div class="rs-sk rs-sk-line" style="width:38%"></div>
+        </div>
+        ${SECTIONS.slice(2)
+          .map(
+            (s) => `
+          <div class="rs-skel-sec">
+            <div class="rs-sk rs-sk-h"></div>
+            <div class="rs-sk rs-sk-line"></div>
+            <div class="rs-sk rs-sk-line" style="width:72%"></div>
+          </div>`
+          )
+          .join("")}
+      </div>
+      <div class="rs-skel-note" id="rs-cta">
+        <p>${escapeHtml(note || "这份简历还没解析。解析会用你配置的 AI 识别出这八项：基本信息 / 求职意向 / 工作经历 / 项目经历 / 教育经历 / 技能标签 / 自我评价 / 摘要。")}</p>
+        <button class="btn primary" id="btn-parse-here">开始解析</button>
+      </div>`;
+  }
+
+  /** 画原文面：一个字没改，只把文件自己的标题提上来。 */
+  function renderSourceFace() {
+    const blocks = rawBlocks(current && current.raw);
+    const head = `
+      <header class="rs-masthead" data-sec="__top">
+        <h2 class="rs-name rs-name-src">原文</h2>
+        <div class="rs-contact mono">${escapeHtml((current && current.title) || "")} · ${escapeHtml(
+          String((current && current.raw && current.raw.length) || 0)
+        )} 字</div>
+      </header>`;
+
+    if (!blocks.length) {
+      return (
+        head +
+        `<section class="rs-sec" data-sec="__raw">
+           <pre class="rs-raw">${escapeHtml(((current && current.raw) || "").slice(0, 20000))}</pre>
+         </section>`
+      );
+    }
+
+    return (
+      head +
+      blocks
+        .map(
+          (b) => `
+        <section class="rs-sec" data-sec="raw-${b.i}"${b.part ? ` data-part="${escapeHtml(b.part)}"` : ""}>
+          <div class="rs-src-head">
+            <h3 class="rs-h3${b.level >= 3 ? " is-sub" : ""}">${escapeHtml(b.head || "（标题前）")}</h3>
+            ${b.part && b.part !== b.head ? `<span class="rs-h3-note">→ ${escapeHtml(b.part)}</span>` : ""}
+            <span class="rs-h3-note mono">${escapeHtml(String(b.text.length))} 字</span>
+          </div>
+          <pre class="rs-raw">${escapeHtml(b.text)}</pre>
+        </section>`
+        )
+        .join("")
+    );
+  }
+
+  /**
+   * 按当前面 / 解析状态重画阅读区，并同步目录与顶栏。
+   *
+   * @param {boolean} [animate=false] 是否播一段入场动画
+   */
+  function renderBody(animate = false) {
+    let html;
+    if (!current) {
+      html = renderEmptyState();
+    } else if (face === "source") {
+      html = renderSourceFace();
+    } else if (parsing) {
+      html = renderSkeleton("正在调用 LLM 解析，单次调用，十几秒…");
+    } else if (current.llm && current.llm.data) {
+      html = renderParsedFace(current.llm.data);
+    } else {
+      html = renderSkeleton();
+    }
+    body.innerHTML = html;
+    body.classList.toggle("is-anim", animate);
+    if (animate) setTimeout(() => body.classList.remove("is-anim"), 800);
+    const cta = body.querySelector("#btn-parse-here");
+    if (cta) cta.addEventListener("click", () => runParse(current.resume_id));
+    const drop = body.querySelector("#rs-drop");
+    if (drop) {
+      drop.addEventListener("click", () => fileInput.click());
+      ["dragenter", "dragover"].forEach((ev) =>
+        drop.addEventListener(ev, (e) => {
+          e.preventDefault();
+          drop.classList.add("is-over");
+        })
+      );
+      ["dragleave", "drop"].forEach((ev) =>
+        drop.addEventListener(ev, (e) => {
+          e.preventDefault();
+          drop.classList.remove("is-over");
+        })
+      );
+      drop.addEventListener("drop", (e) => {
+        const f = e.dataTransfer && e.dataTransfer.files[0];
+        if (f) upload(f);
+      });
+    }
+    rawHas = new Set(rawBlocks(current && current.raw).map((b) => b.part).filter(Boolean));
+    // 没有解析结果时，左侧「章节目录」全是「未解析」，不占位置。
+    const parsedNow = !!(current && current.llm && current.llm.data);
+    $("rs-rail").hidden = !parsedNow;
+    $("rs-bench").classList.toggle("no-rail", !parsedNow);
+    renderToc();
+    renderMeta();
+    renderBar();
+    body.scrollTop = animate ? 0 : scrollTops[face] || 0;
+    activeSec = firstKey();
+    paintToc();
+  }
+
+  /** 这一面第一个「目录里点得到」的段落。 */
+  function firstKey() {
+    for (const m of body.querySelectorAll("[data-sec]")) {
+      const k = m.dataset.part || m.dataset.sec;
+      if (root.querySelector(`.rs-toc-row[data-sec="${k}"]`)) return k;
+    }
+    return "";
+  }
+
+  /** 还没有简历时的拖放上传空态。 */
+  function renderEmptyState() {
+    return `
+      <div class="rs-empty">
+        <div class="rs-drop" id="rs-drop">
+          <div class="rs-drop-ico">${ICO_UPLOAD}</div>
+          <div class="rs-drop-t">把简历拖进来，或点击选择</div>
+          <div class="muted" style="font-size:12px">Word（.docx）/ PDF · 最大 8MB；Markdown（.md / .markdown）/ 纯文本（.txt）· 最大 2MB</div>
+        </div>
+        <div class="rs-empty-note">
+          <div class="rs-toc-sep">解析会识别出这八项</div>
+          <div class="rs-chips">${SECTIONS.map((s) => `<span class="pill static">${escapeHtml(s.label)}</span>`).join("")}</div>
+        </div>
+      </div>`;
+  }
+
+  /** 更新阅读区右上角的模型 / 时间（或原文段数）读数。 */
+  function renderMeta() {
+    const m = $("rs-meta");
+    if (!current) {
+      m.textContent = "";
+      return;
+    }
+    if (face === "source") {
+      const n = rawBlocks(current && current.raw).length;
+      m.innerHTML = `<span class="muted">原文 · ${escapeHtml(String(n))} 段 · 只读</span>`;
+      return;
+    }
+    const llm = current.llm;
+    m.innerHTML = llm
+      ? `<span title="${escapeHtml(fmtTime(llm.parsed_at))}">${escapeHtml(llm.model || "—")} · ${escapeHtml(
+          relTime(llm.parsed_at)
+        )}</span>`
+      : `<span class="muted">尚未解析</span>`;
+  }
+
+  /** 画顶部简历库条与新鲜度提示，并同步按钮可用态。 */
+  function renderBar() {
+    const lib = $("rs-lib");
+    if (!current) {
+      lib.innerHTML = `<span class="muted" style="font-size:12.5px">还没有简历，先上传一份</span>`;
+    } else {
+      // Browsing a draft does not change the plan's adopted resume.
+      const it = resumes.find((x) => x.resume_id === current.resume_id) || {};
+      const title = it.title || current.title || current.resume_id;
+      const parsed = !!(current.llm && current.llm.data);
+      const inUse = !!activeResumeId && activeResumeId === current.resume_id;
+      lib.innerHTML = `<div class="rs-current">
+          <i class="rs-dot" data-state="${parsed ? "on" : "off"}"></i>
+          <b>${escapeHtml(title)}</b>
+          <span class="muted" style="font-size:12px">${parsed ? "已解析" : "未解析"}</span>
+          ${inUse ? `<span class="pill ok static">当前用于评分与写稿</span>`
+            : `<span class="muted" style="font-size:12px">${activeResumeId
+              ? `仅查看 · 实际采用：${escapeHtml(resumes.find(x => x.resume_id === activeResumeId)?.title || activeResumeId)}`
+              : '尚未采用为求职资料'}</span>`}
+        </div>`;
+    }
+
+    const f = $("rs-fresh");
+    const hasCur = !!current;
+    const llm = current && current.llm;
+    if (!llmCfg) {
+      f.innerHTML = "";
+    } else if (!llmCfg.configured) {
+      f.innerHTML = `<span class="pill warn static" title="解析需要先配好 API Key / Base URL / 模型名">LLM 未配置</span>`;
+    } else if (llm && llm.data && llm.model && llm.model !== llmCfg.model) {
+      f.innerHTML = `<span class="pill warn static" title="解析用的是 ${escapeHtml(
+        llm.model
+      )}，当前配置是 ${escapeHtml(llmCfg.model)}">模型已变更 · 建议重新解析</span>`;
+    } else {
+      f.innerHTML = "";
+    }
+
+    $("btn-upload").disabled = parsing;
+    $("btn-parse").disabled = !hasCur || parsing;
+    const proposal = current && current.llm;
+    $("btn-confirm-parse").disabled = parsing || !proposal?.review_token || proposal.review_status === 'confirmed';
+    $("btn-parse").textContent = parsing ? "解析中…" : "重新解析";
+    $("btn-del").disabled = !hasCur || parsing;
+  }
+
+  /** 读 LLM 配置（失败置空，不弹错）。 */
+  async function loadLlmCfg() {
+    try {
+      llmCfg = await api.get("/api/llm/config");
+    } catch {
+      llmCfg = null;
+    }
+  }
+
+  /** 拉简历列表并刷新库条。 */
+  async function loadList() {
+    try {
+      const r = await api.get("/api/resume/list");
+      resumes = r.items || [];
+    } catch {
+      resumes = [];
+    }
+    renderBar();
+  }
+
+  /**
+   * 切换到指定简历并重画。
+   *
+   * @param {string} id 简历 ID
+   */
+  async function selectResume(id) {
+    if (parsing) return toast("解析中，等它跑完再切", "warn");
+    if (current && current.resume_id === id) return;
+    try {
+      current = await api.get("/api/resume/item/" + id);
+      face = 'source';
+      lastResumeId = id;
+      scrollTops.parsed = 0;
+      scrollTops.source = 0;
+      renderBody();
+    } catch (err) {
+      toast(err.message || "载入失败", "bad");
+    }
+  }
+
+  /**
+   * 上传简历文件，成功后自动开始解析。
+   *
+   * @param {File} file 选中或拖入的文件
+   */
+  async function upload(file) {
+    if (parsing) return toast("解析中，等它跑完再传", "warn");
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const draft = await api.upload("/api/resume/upload", fd);
+      current = draft;
+      lastResumeId = draft.resume_id;
+      face = "source";
+      await loadList();
+      renderBody();
+      toast("简历已上传，开始解析…", "ok");
+      await runParse(draft.resume_id);
+    } catch (err) {
+      toast(err.message || "上传失败", "bad");
+    }
+  }
+
+  /**
+   * 调后端 LLM 解析这份简历；失败时屏上保留旧解析结果。
+   *
+   * @param {string} resumeId 简历 ID
+   */
+  async function runParse(resumeId) {
+    if (parsing) return;
+    const prev = current && current.llm;
+    parsing = true;
+    face = "parsed";
+    renderBody();
+    paintParse("running", "正在调用 LLM 解析，单次调用，十几秒…", 40);
+    try {
+      const r = await api.post(`/api/resume/item/${resumeId}/parse`);
+      if (current && current.resume_id === resumeId) {
+        current.llm = r.llm;
+      }
+      parsing = false;
+      paintParse("done", "解析建议已生成，等待核对原文", 100);
+      renderBody(true);
+      toast("AI 建议已生成，尚未确认采用", "ok");
+      await loadList();
+    } catch (err) {
+      parsing = false;
+      paintParse("error", err.message || "解析失败", 100);
+      renderBody();
+      const banner = `
+        <div class="banner bad">
+          <div><strong>解析失败：</strong>${escapeHtml(err.message || "未知错误")}</div>
+          ${
+            prev
+              ? `<div class="muted mt-8" style="font-size:12px">下面是上一次的解析结果（${escapeHtml(
+                  relTime(prev.parsed_at)
+                )} · ${escapeHtml(prev.model || "—")}），没有被覆盖。</div>`
+              : `<div class="muted mt-8" style="font-size:12px">检查「模型」页的 Key / Base URL / 模型名是否可用。</div>`
+          }
+        </div>`;
+      body.insertAdjacentHTML("afterbegin", banner);
+      body.scrollTop = 0;
+      toast(err.message || "解析失败", "bad");
+    }
+  }
+
+  /** 删除当前简历（先确认）。 */
+  async function remove() {
+    if (!current) return toast("没有可删除的简历", "warn");
+    if (!confirm(`删除「${current.title || current.resume_id}」？`)) return;
+    try {
+      await api.del("/api/resume/item/" + current.resume_id);
+      if (lastResumeId === current.resume_id) lastResumeId = "";
+      current = null;
+      face = "parsed";
+      renderBody();
+      await loadList();
+      toast("已删除", "ok");
+    } catch (err) {
+      toast(err.message || "删除失败", "bad");
+    }
+  }
+
+  $("btn-upload").addEventListener("click", () => fileInput.click());
+  $('rs-open-optimize').addEventListener('click', () => { location.hash = `#/resume/optimize${current?.resume_id ? `?resume=${encodeURIComponent(current.resume_id)}` : ''}`; });
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files[0]) upload(fileInput.files[0]);
+    fileInput.value = "";
+  });
+  $("btn-parse").addEventListener("click", () => {
+    if (!current) return toast("先上传或载入一份简历", "warn");
+    runParse(current.resume_id);
+  });
+  $("btn-confirm-parse").addEventListener('click', async () => {
+    if (!current?.llm?.review_token) return;
+    if (!window.confirm('请先切换到原文核对。确认这份 AI 解析没有新增、遗漏或改变你的经历？此操作不会改写上传原文。')) return;
+    const id = current.resume_id;
+    const proposal = current.llm;
+    try {
+      const result = await api.post(`/api/resume/item/${id}/parse/confirm`, {review_token:proposal.review_token,source_sha:proposal.source_sha,confirmed:true});
+      if (current?.resume_id === id) { current.llm = result.llm; renderBody(); }
+      toast('已确认这份解析建议，上传原文保留', 'ok');
+    } catch (err) { toast(err.message || '确认失败，请刷新重新核对', 'bad'); }
+  });
+  $("btn-del").addEventListener("click", remove);
+  ["dragenter", "dragover"].forEach((ev) =>
+    bar.addEventListener(ev, (e) => {
+      e.preventDefault();
+      bar.classList.add("is-over");
+    })
+  );
+  ["dragleave", "drop"].forEach((ev) =>
+    bar.addEventListener(ev, (e) => {
+      e.preventDefault();
+      if (ev === "dragleave" && bar.contains(e.relatedTarget)) return;
+      bar.classList.remove("is-over");
+    })
+  );
+  bar.addEventListener("drop", (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files[0];
+    if (f) upload(f);
+  });
+
+  renderBody();
+  /** 读「当前用于匹配与写稿」的那份简历（工作流不可用时为空）。 */
+  async function loadActiveResumeId() {
+    try {
+      const ctx = await api.get("/api/workflow/control/context");
+      activeResumeId = ctx.active_resume_id || "";
+    } catch {
+      activeResumeId = "";
+    }
+  }
+
+  await Promise.all([loadLlmCfg(), loadList(), loadActiveResumeId()]);
+  renderBar();
+
+  const requestedResume = new URLSearchParams(location.hash.split("?")[1] || "").get("resume");
+  if (requestedResume && resumes.some((x) => x.resume_id === requestedResume)) {
+    await selectResume(requestedResume);
+  } else if (activeResumeId && resumes.some((x) => x.resume_id === activeResumeId)) {
+    await selectResume(activeResumeId);
+  } else if (lastResumeId && resumes.some((x) => x.resume_id === lastResumeId)) {
+    await selectResume(lastResumeId);
+  } else if (resumes.length) {
+    await selectResume(resumes[0].resume_id);
+  } else {
+    renderBody();
+  }
+
+  const disposeInputs = await mountStageInputs(root.querySelector('#resume-inputs'), 'resume_revision');
+  return () => {
+    disposeInputs();
+    if (spyFrame) cancelAnimationFrame(spyFrame);
+    window.__reviseCleanup = null;
+  };
+}
+
+export async function renderResumeOptimization(root) {
+  root.innerHTML = pageHeader('01 / PROFILE', '简历基础优化', '选择优化目标，生成后与原文对照。保留原件，核对事实后再决定是否采用。', '<a class="btn sm" href="#/resume">返回简历 →</a>') + '<div class="card" id="resume-optimization"></div>';
+  const resumeId = new URLSearchParams(location.hash.split('?')[1] || '').get('resume') || '';
+  return renderRevise(root.querySelector('#resume-optimization'), {resumeId});
+}

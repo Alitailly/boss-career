@@ -1,0 +1,4 @@
+interface:
+  display_name: "BOSS 求职助手"
+  short_description: "用自己的 AI 驱动求职程序，从简历和岗位样例开始，按反馈持续调整个人方案"
+  default_prompt: "使用 $boss-career 连接我的求职程序，先根据简历和目标跑一轮，再根据结果帮我调整。"
