@@ -1,11 +1,10 @@
-"""版本更新检测：对着 Gitee 发行版比一版号，有新的就提示用户去下。
+"""版本更新检测：对着本仓库的 GitHub 发行版比一版号，有新的就提示用户去下。
 
-只查 Gitee；GitHub 只提供下载入口，不参与版本判断。忽略版本记的是「水位线」
-——比水位新的版本会重新弹出提示。检测触发时机：启动时后台预热一次、
-用户在网页里手动刷新。
+只看 `Alitailly/boss-career` 的 Releases。忽略版本记的是「水位线」——比水位新的
+版本会重新弹出提示。检测触发时机：启动时后台预热一次、用户在网页里手动刷新。
 
 Attributes:
-    GITEE_RELEASES_PAGE: 提示框上「去下载」按钮的落点。
+    RELEASES_PAGE: 提示框上「去下载」按钮的落点。
     HTTP_TIMEOUT: 拉发行版列表的超时（秒）。
     CACHE_TTL: 同一次运行内结果的有效期（秒）。
     NOTES_LIMIT: 发行说明带进弹窗的最大字符数。
@@ -27,16 +26,13 @@ from .. import __version__ as APP_VERSION
 
 logger = logging.getLogger(__name__)
 
-GITHUB_OWNER = "handsomekai924"
-GITEE_OWNER = "w-kev"
-GITEE_REPO = "boss-automatic-delivery"
-GITEE_RELEASES_API = (
-    f"https://gitee.com/api/v5/repos/{GITEE_OWNER}/{GITEE_REPO}/releases?per_page=20"
+GITHUB_OWNER = "Alitailly"
+GITHUB_REPO = "boss-career"
+RELEASES_API = (
+    f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=20"
 )
-GITEE_RELEASES_PAGE = f"https://gitee.com/{GITEE_OWNER}/{GITEE_REPO}/releases"
-GITHUB_RELEASES_PAGE = (
-    f"https://github.com/{GITHUB_OWNER}/{GITEE_REPO}/releases"
-)
+RELEASES_PAGE = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+RELEASES_LABEL = "GitHub"
 
 HTTP_TIMEOUT = 8.0
 CACHE_TTL = 1800.0
@@ -88,7 +84,7 @@ class Asset:
     """发行版上的一个下载附件。
 
     Attributes:
-        name: Gitee 上的附件名（`BossAutoDelivery-1.1.3.zip`），用来挑更新包。
+        name: 发行版上的附件名（`boss-career-1.1.3.zip`），用来挑更新包。
         url: 下载直链。
     """
 
@@ -103,7 +99,7 @@ class Release:
     Attributes:
         version: 展示用版本号（去掉 `v` 前缀）。
         notes: 发行说明开头一段（Markdown 原文）。
-        assets: Gitee 上的资产（名字 + 直链，可能为空）。
+        assets: 发行版上的资产（名字 + 直链，可能为空）。
     """
 
     version: str
@@ -112,12 +108,12 @@ class Release:
 
 
 def pick_latest(releases: list[dict[str, Any]]) -> Release | None:
-    """从 Gitee 列表里挑最高的正式版；没有可用条目回 `None`。
+    """从 GitHub 发行版列表里挑最高的正式版；没有可用条目回 `None`。
 
-    跳过 `prerelease` / 认不出版本号的条目，不看列表顺序。
+    跳过 `prerelease` / `draft` / 认不出版本号的条目，不看列表顺序。
 
     Args:
-        releases: Gitee 发行版列表。
+        releases: GitHub 发行版列表。
     """
     best: Release | None = None
     for item in releases or []:
@@ -149,7 +145,7 @@ def pick_latest(releases: list[dict[str, Any]]) -> Release | None:
 def pick_zip_asset(assets: Any) -> Asset | None:
     """挑出更新用的 zip 附件；没有则回 `None`。
 
-    优先 `BossAutoDelivery*.zip`，其次任意 `*.zip`。名字为空就看 URL 最后一段。
+    优先名字里带 `boss` 的 zip，其次任意 `*.zip`。名字为空就看 URL 最后一段。
 
     Args:
         assets: `Asset` 或带 `name`/`url` 的字典序列。
@@ -171,7 +167,7 @@ def pick_zip_asset(assets: Any) -> Asset | None:
     zips = [a for a in items if _name_of(a).lower().endswith(".zip")]
     if not zips:
         return None
-    preferred = [a for a in zips if _name_of(a).lower().startswith("bossautodelivery")]
+    preferred = [a for a in zips if "boss" in _name_of(a).lower()]
     return preferred[0] if preferred else zips[0]
 
 
@@ -183,29 +179,34 @@ def can_self_update() -> bool:
 
 
 def fetch_latest_release() -> Release:
-    """去 Gitee 拉发行版列表并挑最新正式版；失败抛 `UpdateCheckError`。"""
+    """去 GitHub 拉本仓库的发行版列表并挑最新正式版；失败抛 `UpdateCheckError`。"""
     try:
         resp = requests.get(
-            GITEE_RELEASES_API,
+            RELEASES_API,
             timeout=HTTP_TIMEOUT,
-            headers={"User-Agent": f"BossAutoDelivery/{APP_VERSION}"},
+            headers={
+                "User-Agent": f"boss-career/{APP_VERSION}",
+                "Accept": "application/vnd.github+json",
+            },
         )
+        if resp.status_code == 404:
+            raise UpdateCheckError("这个仓库还没有发布过正式版本。")
         if resp.status_code in (403, 429):
             raise UpdateCheckError(
-                "Gitee 接口被限流了，等一会儿再试；不影响程序其它功能。"
+                "GitHub 接口被限流了，等一会儿再试；不影响程序其它功能。"
             )
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
-        raise UpdateCheckError("连不上 Gitee，稍后再试；不影响程序其它功能。") from exc
+        raise UpdateCheckError("连不上 GitHub，稍后再试；不影响程序其它功能。") from exc
     except ValueError as exc:
-        raise UpdateCheckError("Gitee 回的数据看不懂，稍后再试。") from exc
+        raise UpdateCheckError("GitHub 回的数据看不懂，稍后再试。") from exc
 
     if not isinstance(data, list):
-        raise UpdateCheckError("Gitee 回的数据看不懂，稍后再试。")
+        raise UpdateCheckError("GitHub 回的数据看不懂，稍后再试。")
     latest = pick_latest(data)
     if latest is None:
-        raise UpdateCheckError("Gitee 上还没发过正式版本。")
+        raise UpdateCheckError("这个仓库还没有发布过正式版本。")
     return latest
 
 
@@ -237,7 +238,7 @@ def _fresh(seconds: float | None = None) -> bool:
 
 
 def refresh(*, force: bool = False) -> dict[str, Any]:
-    """拿一份检测结果；缓存没过期就直接回，过期才真去打 Gitee。
+    """拿一份检测结果；缓存没过期就直接回，过期才真去打 GitHub。
 
     失败也缓存，避免用户每开一页都卡住等网络。触发检测：启动时后台预热、网页手动刷新。
 
@@ -395,8 +396,8 @@ def build_status(*, path: Any = None, force: bool = False) -> dict[str, Any]:
         "should_prompt": has_update and not suppressed,
         "ignored": ignored or None,
         "notes": release.notes if release else "",
-        "gitee_url": GITEE_RELEASES_PAGE,
-        "github_url": GITHUB_RELEASES_PAGE,
+        "releases_url": RELEASES_PAGE,
+        "github_url": RELEASES_PAGE,
         "assets": [{"name": a.name, "url": a.url} for a in assets],
         "zip_asset": {"name": zip_asset.name, "url": zip_asset.url} if zip_asset else None,
         "can_self_update": can_self_update(),
@@ -434,7 +435,7 @@ def format_console_lines(status: dict[str, Any]) -> list[str]:
     if not latest and error:
         need = f"没测到（{error}）"
     elif not latest:
-        need = "没测到（Gitee 上还没发过正式版本）"
+        need = "没测到（GitHub 上还没发过正式版本）"
     elif status.get("has_update"):
         if status.get("ignored") and not status.get("should_prompt"):
             need = f"有新版本 v{_normalize(latest)}，但已忽略；要再提醒请点开网页里的更新窗"
@@ -449,6 +450,5 @@ def format_console_lines(status: dict[str, Any]) -> list[str]:
         f"  是否需要更新 {need}",
     ]
     if status.get("has_update"):
-        lines.append(f"  Gitee 下载   {status.get('gitee_url') or GITEE_RELEASES_PAGE}")
-        lines.append(f"  GitHub 下载  {status.get('github_url') or GITHUB_RELEASES_PAGE}")
+        lines.append(f"  发布页       {status.get('releases_url') or RELEASES_PAGE}")
     return lines

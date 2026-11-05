@@ -1,4 +1,4 @@
-/** 版本更新提示：开页面时比一次 Gitee 发行版，有新的就弹窗；点「立即更新」走应用内自更新 */
+/** 版本更新提示：开页面时比一次本仓库的 GitHub 发行版，有新的就弹窗；点「立即更新」走应用内自更新 */
 
 import { api } from "./api.js";
 import { modal, escapeHtml, toast } from "./ui.js";
@@ -7,7 +7,7 @@ import { modal, escapeHtml, toast } from "./ui.js";
 const RECONNECT_MS = 1500;
 /** 等新服务起来的总时长上限。超过就当更新没跑完，让用户自己看日志 */
 const WAIT_LIMIT_MS = 10 * 60 * 1000;
-/** 后台轻提示的轮询间隔。检测本身是后端每 30 分钟真打一次 Gitee，这里只管读缓存 */
+/** 后台轻提示的轮询间隔。检测本身是后端每 30 分钟真打一次 GitHub，这里只管读缓存 */
 const WATCHER_POLL_MS = 60 * 1000;
 /** 「更新完成」提示停留多久再刷新——够看清更新到了哪一版，又不至于干等 */
 const RELOAD_DELAY_MS = 1500;
@@ -50,7 +50,7 @@ export function peekUpdateStatus() {
  * 有新版本就弹「发现新版本」窗口。出口：
  *
  * - 立即更新——应用内自更新：下载 zip → 停服换文件 → 同端口重启，全程 WS 进度
- * - 前往 Gitee / GitHub 下载——打开对应发行版页（版本判断只用 Gitee）
+ * - 前往 GitHub 下载——打开本仓库的发行版页
  * - 忽略此版本——记进后端，这一版不再弹；发了更新的版本照样弹
  * - 取消 / 关掉——什么都不记，下次打开页面还会弹；圆点也不灭，
  *   「关掉」≠「忽略」，只要还有没被忽略的新版就一直挂着
@@ -164,7 +164,6 @@ function showUpdateModal(status) {
       </div>
       <div class="btn-row">
         ${applyBtn}
-        <button class="btn" type="button" data-act="gitee">前往 Gitee 下载</button>
         <button class="btn" type="button" data-act="github">前往 GitHub 下载</button>
         <button class="btn ghost" type="button" data-act="ignore">忽略此版本</button>
         <button class="btn ghost" type="button" data-act="cancel">取消</button>
@@ -213,8 +212,8 @@ function showUpdateModal(status) {
     if (!btn || btn.disabled) return;
     const act = btn.dataset.act;
 
-    if (act === "gitee" || act === "github") {
-      const url = act === "gitee" ? status.gitee_url : status.github_url;
+    if (act === "github") {
+      const url = status.github_url || status.releases_url;
       if (url) window.open(url, "_blank", "noopener");
       return;
     }

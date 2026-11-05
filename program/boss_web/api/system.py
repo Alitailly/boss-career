@@ -244,11 +244,11 @@ def apply_update(body: ApplyUpdateBody) -> dict[str, Any]:
 
     status = update_check.build_status(force=True)
     if not status.get("latest") and status.get("error"):
-        raise UpstreamError(f"读不到 Gitee 发行版：{status['error']}")
+        raise UpstreamError(f"读不到 GitHub 发行版：{status['error']}")
 
     zip_asset = status.get("zip_asset")
     if not zip_asset or not zip_asset.get("url"):
-        raise ConflictError("这个发行版没附 zip 更新包，请到 Gitee 手动下载覆盖。")
+        raise ConflictError("这个发行版没附 zip 更新包，请到 GitHub 发布页手动下载覆盖。")
 
     latest = str(status.get("latest") or "")
     target = (body.version or "").strip().lstrip("vV")

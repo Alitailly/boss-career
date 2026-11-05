@@ -124,7 +124,7 @@ def _banner(url: str, info: dict[str, str], *, setup: bool = False) -> None:
         print("  版本对比     本次不查（用 --mode run 启动时才查）")
     else:
         print("  登录状态     正在校验…")
-        print("  版本对比     正在查 Gitee 发行版…")
+        print("  版本对比     正在查 GitHub 发行版…")
     if info.get("portable") == "0":
         print("  ⚠ 程序所在目录写不进去，数据已改存到上面这个目录")
     if info.get("warning") == "temp_run":
