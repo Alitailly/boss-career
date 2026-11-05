@@ -94,4 +94,4 @@ workflow/       采集、补全文、写稿、发送、复盘等执行脚本
 
 ## 许可
 
-MIT。抓取、登录与投递的底层实现基于 [boss-automatic-delivery](https://github.com/handsomekai924/boss-automatic-delivery)（MIT）；AI 驱动的方案、评分、文案层与配套 Skill 为本项目改造。
+MIT，详见仓库根目录的 `LICENSE`。
