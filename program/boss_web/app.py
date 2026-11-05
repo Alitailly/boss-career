@@ -60,6 +60,23 @@ def create_app() -> FastAPI:
     # `workflow_control.paths()`。
     app.include_router(api_router, prefix="/api")
 
+    @app.middleware('http')
+    async def _offline_demo(request: Request, call_next):
+        from . import demo
+        if demo.enabled():
+            body = {}
+            if request.url.path in ('/api/ai/tasks', '/api/workflow/control/tasks'):
+                try:
+                    body = await request.json()
+                except ValueError:
+                    pass  # Leave malformed JSON to the normal request validation.
+                if not isinstance(body, dict):
+                    body = {}
+            if demo.blocked_request(request.url.path, request.method, request.query_params, body):
+                return JSONResponse(status_code=409, content={
+                    'ok': False, 'code': 'offline_demo', 'message': demo.MESSAGE})
+        return await call_next(request)
+
     @app.exception_handler(WebError)
     async def _web_error(request: Request, exc: WebError) -> JSONResponse:  # noqa: ANN202
         """业务错误回 JSON，并按状态码落一行日志。"""

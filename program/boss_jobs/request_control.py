@@ -86,6 +86,8 @@ class RequestControl:
         os.replace(temp, self.path)
 
     def check(self, data, scope):
+        if os.environ.get('BOSS_PLATFORM_OFFLINE') == '1':
+            raise JobApiError(36, '离线体验模式已禁用平台操作；请使用本地示例岗位')
         if data.get('account_paused'):
             raise JobApiError(36, '账号平台操作已暂停，请先处理平台提示并明确恢复；不会自动重试')
         if scope in data.get('paused_scopes', {}):
@@ -100,6 +102,7 @@ class RequestControl:
         except JobApiError as exc:
             self.event({'event': 'blocked', 'scope': scope, 'code': exc.code,
                         'outcome': 'blocked', 'blocked_reason':
+                        'offline_demo' if os.environ.get('BOSS_PLATFORM_OFFLINE') == '1' else
                         'account_paused' if data.get('account_paused') else 'scope_paused'})
             raise
 

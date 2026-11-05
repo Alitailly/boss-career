@@ -37,6 +37,17 @@ const routes = {
 /** 上一视图的清理函数，换页前调用。 */
 let disposePrev = null;
 let navigationVersion = 0;
+let demoEnabled = false;
+
+function showDemoNotice() {
+  const view = document.getElementById('view');
+  if (!demoEnabled || !view || view.querySelector('.demo-notice')) return;
+  const notice = document.createElement('div');
+  notice.className = 'demo-notice';
+  notice.setAttribute('role', 'status');
+  notice.textContent = '离线体验：本实例的岗位均为虚构示例；平台登录、采集、发送和回复同步已禁用。';
+  view.prepend(notice);
+}
 
 function disposeView(dispose) {
   if (typeof dispose !== 'function') return;
@@ -103,10 +114,12 @@ export async function navigate() {
       return;
     }
     disposePrev = dispose;
+    showDemoNotice();
   } catch (err) {
     if (version !== navigationVersion) return;
     console.error(err);
     view.innerHTML = `<div class="empty"><div class="empty-icon">⚠</div><p>${err.message || err}</p></div>`;
+    showDemoNotice();
   }
   window.scrollTo({ top: 0, behavior: 'auto' });
 }
@@ -118,6 +131,20 @@ export async function refreshBridge() {
   try {
     const st = await api.get("/api/auth/status");
     window.dispatchEvent(new CustomEvent("boss:session", { detail: st }));
+    if (st.demo?.enabled) {
+      demoEnabled = true;
+      showDemoNotice();
+      dot.className = 'signal warn';
+      label.textContent = '离线体验 · 虚构岗位';
+      label.title = st.demo.notice;
+      document.title = '离线体验 · BOSS ORBIT';
+      const note = document.querySelector('.sidebar-note');
+      if (note) {
+        note.querySelector('b').textContent = '离线体验：平台操作已禁用';
+        note.querySelector('p').textContent = '岗位均为虚构示例，可继续评分、写稿和面试准备。';
+      }
+      return;
+    }
     if (st.logged_in) {
       dot.className = "signal ok";
       label.textContent = st.phone_masked || "已登录";

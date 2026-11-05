@@ -70,6 +70,9 @@ class SliderSolutionBody(BaseModel):
 @router.get("/status")
 def status() -> dict[str, Any]:
     """当前登录任务总览。"""
+    from .. import demo
+    if demo.enabled():
+        return {'logged_in': False, 'task': None, 'demo': demo.status()}
     return login_tasks.status_payload()
 
 

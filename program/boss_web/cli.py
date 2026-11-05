@@ -40,10 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         default="run",
-        choices=["run", "serve", "setup"],
+        choices=["run", "serve", "setup", "demo"],
         help="启动模式：run=正常（含面板任务执行器）；serve=只起服务；"
-             "setup=首次设置（只加载必要服务，不跑历史任务、不采集、不发送）",
+             "setup=首次设置（不跑历史任务）；demo=离线体验（独立数据、虚构岗位、禁用平台操作）",
     )
+    parser.add_argument('--demo-dir', help='离线体验的数据目录（仅限 --mode demo，默认 program/data-demo）')
     parser.add_argument(
         "--self-check",
         action="store_true",
@@ -117,7 +118,10 @@ def _banner(url: str, info: dict[str, str], *, setup: bool = False) -> None:
     print(f"  BOSS ORBIT 求职工作台已启动  v{__version__}")
     print(f"  控制台地址   {url}")
     print(f"  数据目录     {info.get('data_dir', C.DATA_DIR)}")
-    if setup:
+    if os.environ.get('BOSS_PLATFORM_OFFLINE') == '1':
+        print('  本次模式     离线体验：岗位均为虚构示例；平台采集、登录、发送与回复同步已禁用')
+        print('  下一步       将本地址交给 AI，使用本地岗位体验评分、写稿与面试准备')
+    elif setup:
         # setup 模式不跑面板执行器，也不排登录态/版本自检，别打「正在校验」骗人。
         print("  本次模式     首次设置：不跑采集/写稿/发送；到「系统配置 → 工作区」建工作区")
         print("  登录状态     本次不校验（用 --mode run 启动时才校验）")
@@ -243,7 +247,16 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         进程退出码。
     """
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.demo_dir and args.mode != 'demo':
+        parser.error('--demo-dir 只能和 --mode demo 一起使用')
+    if args.mode == 'demo':
+        from .demo import configure
+        try:
+            configure(args.demo_dir)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
     info = bootstrap()
     _restore_app_settings()
     _setup_logging(args.log_level)
@@ -251,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     # 启动模式：serve/setup 不启动面板任务执行器，避免"只是看看设置"就把到期的
     # 采集/写稿/发送任务跑起来。模式写进环境变量，health 与 /api/ai/context 都会报。
     os.environ["BOSS_SERVE_MODE"] = args.mode
-    if args.mode != "run":
+    if args.mode in ('serve', 'setup'):
         os.environ["BOSS_PANEL_RUNNER"] = "0"
         # serve 是给机器/后台用的，不弹浏览器；setup 是首次设置，要让人直接看到设置页。
         if args.mode == "serve":

@@ -544,3 +544,12 @@ a:focus-visible,button:focus-visible,summary:focus-visible { outline:2px solid v
 .score-input-conditions>summary{font-size:12px;cursor:pointer;color:var(--accent)}
 .score-input-jd{color:var(--text-2)}
 @media(max-width:720px){.ms-result-flow{grid-template-columns:minmax(0,1fr);gap:14px;padding-top:8px}.ms-flow-arrow{display:none}.ms-result-flow>div{display:grid;grid-template-columns:1fr auto;align-items:center;border-bottom:1px solid var(--stroke);padding-bottom:10px}.ms-result-flow>div>p{grid-column:1/-1}.ms-result-flow strong{font-size:28px}.ms-result-threshold strong{font-size:23px}.score-input-document>header{padding:16px}.score-input-document-body{padding:0 16px 16px;max-height:65vh}.score-input-intro>p:first-child{min-width:0;flex-basis:100%}}
+/* Visible on narrow screens as well as the sidebar and bridge. */
+.demo-notice {
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border: 1px solid currentColor;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}

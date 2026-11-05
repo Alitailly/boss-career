@@ -352,6 +352,9 @@ def _workspace_checks(folder: Path) -> tuple[bool, bool, bool, str, str]:
 
 def _login_check() -> tuple[bool, str]:
     """登录态：读启动自检的缓存，不在这里拉 Chrome。"""
+    from .. import demo
+    if demo.enabled():
+        return True, '离线体验不需要登录；平台操作已禁用'
     try:
         from . import session_check
 

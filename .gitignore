@@ -1,5 +1,6 @@
 # ---- 运行数据（绝不入库）----
 data/
+data-demo*/
 workspace/
 browser-profile/
 logs/

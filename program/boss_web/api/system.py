@@ -76,6 +76,7 @@ def health() -> dict[str, Any]:
     import boss_db
 
     data_dir = runtime.app_data_dir()
+    from .. import demo
     return {
         "frozen": runtime.is_frozen(),
         "version": APP_VERSION,
@@ -87,6 +88,7 @@ def health() -> dict[str, Any]:
         # run=正常；serve/setup 只起服务，不认领面板任务
         "mode": os.environ.get("BOSS_SERVE_MODE", "run"),
         "panel_runner": os.environ.get("BOSS_PANEL_RUNNER", "1") != "0",
+        'demo': demo.status(),
     }
 
 

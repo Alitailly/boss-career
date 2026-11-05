@@ -204,10 +204,12 @@ def ai_context(x_actor: str | None = Header(default=None, alias="X-Actor")) -> d
         except CoreError:
             snap = None
     store = TaskStore(ws.root)
+    from .. import demo
     return {
         "ok": True,
         "contract": CONTRACT_VERSION,
         "mode": __import__("os").environ.get("BOSS_SERVE_MODE", "run"),
+        'demo': demo.status(),
         "workspace": {"id": meta.get("id"), "name": meta.get("name"), "root": str(ws.root)},
         "active": {
             "candidate": _brief(candidate),
@@ -225,7 +227,8 @@ def ai_context(x_actor: str | None = Header(default=None, alias="X-Actor")) -> d
             "registered": len(ws.list("strategy")),
         },
         "executors": {"llm:chat": True, "external_skill": True},
-        "credentials": {"platform_login": "check /api/auth/status", "llm_key": "check /api/llm/config"},
+        "credentials": {"platform_login": 'not required: offline demo' if demo.enabled() else "check /api/auth/status",
+                        "llm_key": "check /api/llm/config"},
         "actor": _actor(x_actor),
     }
 
