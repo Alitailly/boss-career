@@ -114,7 +114,7 @@ def _banner(url: str, info: dict[str, str], *, setup: bool = False) -> None:
     from . import __version__
 
     print("=" * 60)
-    print(f"  BOSS 自动投递助手已启动  v{__version__}")
+    print(f"  BOSS ORBIT 求职工作台已启动  v{__version__}")
     print(f"  控制台地址   {url}")
     print(f"  数据目录     {info.get('data_dir', C.DATA_DIR)}")
     if setup:

@@ -18,7 +18,7 @@ from pathlib import Path
 
 DATA_DIR_NAME = "data"
 
-APP_DIR_NAME = "BossAutoDelivery"
+APP_DIR_NAME = "BossCareer"
 
 APP_DATA_ENV = "BOSS_APP_DATA"
 
@@ -63,7 +63,7 @@ def app_data_dir() -> Path:
 
 
 def fallback_data_dir() -> Path:
-    """exe 同目录写不了时的备选（`%LOCALAPPDATA%\\BossAutoDelivery\\data`）。"""
+    """exe 同目录写不了时的备选（`%LOCALAPPDATA%\\BossCareer\\data`）。"""
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         root = Path(base) if base else Path.home() / "AppData" / "Local"

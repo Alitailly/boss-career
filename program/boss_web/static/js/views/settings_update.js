@@ -24,7 +24,7 @@ export async function renderSettingsUpdate(root) {
     <div class="settings-scroll">
       <div class="update-summary" id="upd-summary"></div>
       <div class="divider"></div>
-      <div class="card-sub mb-8">更新日志 <span class="muted">（%TEMP%\\BossAutoDelivery-update\\，不用自己打开）</span></div>
+      <div class="card-sub mb-8">更新日志 <span class="muted">（%TEMP%\\BossCareer-update\\，不用自己打开）</span></div>
       <div class="card-sub" id="lbl-update-log">update.log</div>
       <pre class="update-log-view" id="log-update">加载中…</pre>
       <div class="card-sub" id="lbl-progress-log">progress.log</div>
@@ -219,7 +219,7 @@ export async function renderSettingsUpdate(root) {
     const d = p.diagnostics || {};
     const lines = [];
     const push = (k, v) => lines.push(`${k}：${v == null || v === "" ? "无" : v}`);
-    lines.push("=== BossAutoDelivery 诊断信息 ===");
+    lines.push("=== BossCareer 诊断信息 ===");
     push("导出时间", new Date().toLocaleString("zh-CN"));
     push("当前版本", d.current ? `v${d.current}` : "未知");
     push("最新版本", d.latest ? `v${d.latest}` : "（未测到）");

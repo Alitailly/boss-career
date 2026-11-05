@@ -39,12 +39,12 @@ from .. import __version__ as APP_VERSION
 
 logger = logging.getLogger(__name__)
 
-UPDATE_TEMP_DIR_NAME = "BossAutoDelivery-update"
+UPDATE_TEMP_DIR_NAME = "BossCareer-update"
 MAX_ZIP_BYTES = 500 * 1024 * 1024
 DOWNLOAD_TIMEOUT = (10.0, 300.0)
 DONE_MARKER_MAX_AGE = 600.0
 
-EXE_NAME = "BossAutoDelivery.exe"
+EXE_NAME = "BossCareer.exe"
 
 
 class UpdateApplyError(Exception):
@@ -343,7 +343,7 @@ def download_zip(
             url,
             stream=True,
             timeout=DOWNLOAD_TIMEOUT,
-            headers={"User-Agent": f"BossAutoDelivery/{APP_VERSION}"},
+            headers={"User-Agent": f"BossCareer/{APP_VERSION}"},
         ) as resp:
             resp.raise_for_status()
             length = int(resp.headers.get("Content-Length") or 0)
@@ -379,7 +379,7 @@ def download_zip(
 
 
 def validate_zip(path: Path) -> None:
-    """校验更新包：真 zip、无 zip-slip 路径、且解得出 `BossAutoDelivery.exe`。
+    """校验更新包：真 zip、无 zip-slip 路径、且解得出 `BossCareer.exe`。
 
     Args:
         path: 待校验的 zip 路径。
@@ -407,11 +407,11 @@ def validate_zip(path: Path) -> None:
 _BAT_TEMPLATE = r"""@echo off
 chcp 65001 >nul
 setlocal EnableExtensions
-title BossAutoDelivery Update
-if not defined WORK_DIR set "WORK_DIR=%TEMP%\BossAutoDelivery-update"
+title BossCareer Update
+if not defined WORK_DIR set "WORK_DIR=%TEMP%\BossCareer-update"
 set "LOG=%WORK_DIR%\update.log"
 set "PROG=%WORK_DIR%\progress.log"
-set "EXE_NAME=BossAutoDelivery.exe"
+set "EXE_NAME=BossCareer.exe"
 call :log === update start ===
 
 if not defined INSTALL_DIR (
@@ -477,7 +477,7 @@ if not exist "%EXTRACT_DIR%\%EXE_NAME%" (
   )
 )
 if not exist "%EXTRACT_DIR%\%EXE_NAME%" (
-  call :fail "BossAutoDelivery.exe missing after extract"
+  call :fail "BossCareer.exe missing after extract"
   exit /b 1
 )
 
@@ -531,7 +531,7 @@ if errorlevel 1 (
   exit /b 1
 )
 if not exist "%INSTALL_DIR%\%EXE_NAME%" (
-  call :fail "new BossAutoDelivery.exe missing after copy"
+  call :fail "new BossCareer.exe missing after copy"
   exit /b 1
 )
 
