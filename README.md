@@ -80,6 +80,6 @@ python -m boss_web
 
 平台若认为本项目不妥，联系即下架。
 
-## 许可与来源
+## 许可
 
-MIT。程序部分基于 [boss-automatic-delivery](https://github.com/handsomekai924/boss-automatic-delivery)（MIT）改造：保留其抓取、登录与投递能力，增加 AI 驱动的方案/评分/文案层与配套 Skill。
+MIT，详见 `LICENSE`。
