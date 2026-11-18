@@ -1,9 +1,11 @@
 """Queued plan-dependent tasks must not silently adopt a different plan."""
 
 import gc
+import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -95,6 +97,18 @@ class TaskSnapshotTests(unittest.TestCase):
             })
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(response.json()['code'], 'stale_input')
+
+    def test_writer_rejects_a_plan_changed_after_worker_start(self):
+        queued = snapshot.build(self.ws)
+        self.activate_plan('new query')
+        script = WORKFLOW / 'greeting' / 'writer' / 'bridge.py'
+        proc = subprocess.run(
+            [sys.executable, str(script), '--request', str(self.ws.root / 'greeting' / 'unused.json'),
+             '--expected-snapshot', queued['fingerprint']],
+            cwd=WORKFLOW, capture_output=True, encoding='utf-8', timeout=10,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(json.loads(proc.stdout)['code'], 'stale_input', proc.stderr)
 
     def test_scoring_context_uses_only_its_bound_snapshot(self):
         resume = save_resume('Fictional resume')

@@ -1165,7 +1165,7 @@ def call_bridge(request_path: Path, timeout: float | None = None) -> dict:
     limit = int(timeout or bridge_timeout())
     proc = subprocess.Popen(
         [sys.executable, "-B", str(BRIDGE), "--request", str(request_path),
-         "--timeout", str(limit)],
+         "--timeout", str(limit), "--expected-snapshot", snapshot_state()["fingerprint"]],
         cwd=str(WS), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8",
     )
@@ -1183,6 +1183,12 @@ def call_bridge(request_path: Path, timeout: float | None = None) -> dict:
                 proc.communicate()
                 raise RuntimeError(f"桥接器等待超过 {limit + 30}s，已终止；本批不发送")
     if proc.returncode:
+        try:
+            failure = json.loads(out)
+        except ValueError:
+            failure = {}
+        if isinstance(failure, dict) and failure.get("code") == StaleInput.code:
+            raise StaleInput(failure["message"], field="snapshot_fingerprint")
         raise RuntimeError(f"桥接器退出码 {proc.returncode}: {(out or err or '')[:300]}")
     summary = json.loads(out)
     result = json.loads(Path(summary["result_path"]).read_text(encoding="utf-8"))
@@ -1384,6 +1390,8 @@ def prepare(eligible: list[dict], state: dict, budget: int, batch_size: int,
         req = build_request(batch_id, chunk)
         try:
             result = call_bridge(req)
+        except StaleInput:
+            raise
         except Exception as exc:  # 写稿失败只影响本批
             for j in chunk:
                 append_event("write_failed", j["job_id"], batch_id=batch_id, error=str(exc)[:200])

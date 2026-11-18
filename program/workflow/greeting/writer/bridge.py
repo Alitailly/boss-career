@@ -27,20 +27,27 @@ SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}|\bBearer\s+\S+|(?:api[_-]?key|cook
 BANNED = ("我们公司", "我们团队", "欢迎投递", "期待你的加入", "可立即全职")
 
 
-def _effective_policy() -> dict | None:
+def _active_snapshot() -> dict | None:
+    from workflow_env import ensure_core_path
+
+    ensure_core_path()
+    from boss_core import compat
+
+    return compat.load(workspace_root())
+
+
+def _effective_policy(snap: dict | None = None) -> dict | None:
     """有效方案里的写作策略（唯一真源）；拿不到返回 None。
 
     工作区还没迁移时返回 None，调用方退回 policy.json——旧布局仍然能跑。
     """
     try:
-        from workflow_env import ensure_core_path
-
-        ensure_core_path()
-        from boss_core import compat
-
-        snap = compat.load(workspace_root())
+        if snap is None:
+            snap = _active_snapshot()
         if not snap:
             return None
+        from boss_core import compat
+
         effective = compat.delivery_policy(snap)
         if not int(effective.get("max_len") or 0):
             return None
@@ -49,10 +56,10 @@ def _effective_policy() -> dict | None:
         return None
 
 
-def apply_policy() -> dict:
+def apply_policy(*, snap: dict | None = None) -> dict:
     """把字数上限、禁用词、规则文本换成**当前生效**的版本。"""
     global POLICY, MAX_GREETING_LENGTH, BANNED
-    effective = _effective_policy()
+    effective = _effective_policy(snap)
     if effective is not None:
         POLICY = effective
         POLICY.setdefault("count_rule", "按 Python len() 计算，标点计入")
@@ -252,21 +259,19 @@ def validate_response(request: dict, raw: dict) -> list[dict]:
     return rows
 
 
-def _composed_instruction(req: str) -> str | None:
+def _composed_instruction(req: str, *, snap: dict | None = None) -> str | None:
     """用核心库合成一份完整写作指令（系统约束 + 策略 + 面板规则 + 披露 + 长度）。
 
     以前这里是"隐藏模板 writer-prompt.txt + 面板规则"两段硬拼，用户看不到全貌；
     迁移后隐藏模板进了个人策略的 preamble，合成结果就是最终规则。
     """
     try:
-        from workflow_env import ensure_core_path
-
-        ensure_core_path()
-        from boss_core import compat, greeting
-
-        snap = compat.load(workspace_root())
+        if snap is None:
+            snap = _active_snapshot()
         if not snap:
             return None
+        from boss_core import greeting
+
         rules = greeting.compose(snap, panel_rule=req)
         if not rules.get("text"):
             return None
@@ -275,14 +280,14 @@ def _composed_instruction(req: str) -> str | None:
         return None
 
 
-def build_instruction(requirement: str | None = None) -> str:
+def build_instruction(requirement: str | None = None, *, snap: dict | None = None) -> str:
     """组装发给模型的完整指令。
 
     规则优先级：程序系统约束（不可覆盖）→ 面板「系统配置 → 招呼语」→ 方案写作策略
     → 披露设置。整段由核心库合成，谁都能读到最后生效的全文（`GET /api/ai/greeting-rules`）。
     """
     req = requirement if requirement is not None else fetch_requirement()
-    composed = _composed_instruction(req)
+    composed = _composed_instruction(req, snap=snap)
     if composed:
         # 合成规则已包含用户的篇幅要求与当前硬上限。
         # 不再额外发明 170–185 之类的范围，避免覆盖个人对齐结果。
@@ -481,9 +486,9 @@ def _trim_to_limit(text: str, limit: int) -> str:
     return out if len(out) <= limit else trimmed
 
 
-def invoke(request: dict, timeout: int, retry: bool = False) -> tuple[dict, bool, Path]:
+def invoke(request: dict, timeout: int, retry: bool = False, *, snap: dict | None = None) -> tuple[dict, bool, Path]:
     # 规则文本 = 固定写作说明 + 程序里当前生效的写作规则（R2：不让提示词和校验各写一份）
-    instruction = build_instruction()
+    instruction = build_instruction(snap=snap)
     fingerprint = hashlib.sha256(canonical({"version": VERSION,
         "policy": POLICY.get("version"), "prompt": instruction, "request": request}).encode("utf-8")).hexdigest()
     run_dir = GREETING_ROOT / "writer" / "runs" / request["batch_id"] / fingerprint[:20]
@@ -542,13 +547,25 @@ def main() -> int:
     parser.add_argument("--request", required=True, type=Path, help="greeting/ 内脱敏批次 JSON")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--retry", action="store_true", help="显式重新调用，产生额外消耗")
+    parser.add_argument("--expected-snapshot", default="", help="发起写稿批次时的方案指纹")
     args = parser.parse_args()
     try:
         if not 30 <= args.timeout <= 600:
             raise BridgeError(10, "timeout 必须在 30–600 秒。")
-        apply_policy()
+        snap = None
+        if args.expected_snapshot:
+            snap = _active_snapshot() or {}
+            from boss_core.errors import StaleInput
+            from boss_core.snapshot import require_task_fingerprint
+
+            try:
+                require_task_fingerprint(snap, args.expected_snapshot)
+            except StaleInput as exc:
+                print(canonical({"status": "error", **exc.payload()}))
+                return 15
+        apply_policy(snap=snap)
         request = load_request(args.request)
-        result, hit, path = invoke(request, args.timeout, args.retry)
+        result, hit, path = invoke(request, args.timeout, args.retry, snap=snap)
         rejected = sum(i["validation_status"] == "rejected" for i in result["items"])
         print(canonical({"status": result["status"], "batch_id": request["batch_id"], "result_path": str(path),
             "cache_hit": hit, "items": len(result["items"]), "rejected": rejected,

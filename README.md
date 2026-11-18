@@ -67,6 +67,8 @@ macOS / Linux 可使用虚拟环境中的 `bin/python` 执行后续命令；不�
 
 正常模式启动后台任务执行器，并校验已有登录态；已有到期任务可能被接管。仅查看本地接口可使用 `--mode serve`，它不接管后台任务，也不进行启动登录校验。仅打开面板不代表授权发送。
 
+通过 AI 接口或面板新建的一次性采集、匹配和写稿任务会记录方案指纹。执行前如果发现方案、候选人资料或策略已变化，程序会停止该任务，提示按当前方案重新提交。
+
 ### 3. 先看一小批结果，再调整
 
 真实使用时：确认范围 → 小批采集 → 看不同类型岗位的评分 → 校准招呼语 → 按授权范围执行 → 根据实际回复复盘。
@@ -119,11 +121,11 @@ macOS / Linux 可使用虚拟环境中的 `bin/python` 执行后续命令；不�
 
 实际数据位置会受环境变量和工作区设置影响，可查看 `/api/system/health`。运行数据和密钥不提交到仓库；分享日志或工作区前请自行检查其中的个人资料。
 
-离线功能检查（在 `program/` 中）：
+离线功能与任务快照检查（在 `program/` 中）：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install httpx
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_demo.py -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 ## 使用约定与许可
