@@ -7,8 +7,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from fastapi.testclient import TestClient
 
@@ -18,7 +19,7 @@ from boss_core.workspace import Workspace
 from boss_web.app import create_app
 from boss_web.services import single_scoring, workflow_context
 from boss_web.services.resume_store import save_resume
-from boss_web.services.workflow_tasks import build_command
+from boss_web.services.workflow_tasks import TaskStore, build_command
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / 'workflow'
@@ -52,6 +53,45 @@ class TaskSnapshotTests(unittest.TestCase):
         })
         self.ws.activate_plan(plan['id'])
         return plan
+
+    def test_cancel_panel_task_does_not_cancel_an_unrelated_delivery(self):
+        store = TaskStore(self.ws.root)
+        with patch('boss_login.account.pin_payload', return_value={}):
+            job = store.add('send', {})
+        store.claim()
+        other = SimpleNamespace(task_id='dv_other', status='running')
+        with (TestClient(create_app()) as client,
+              patch('boss_web.services.deliver_task.deliver_tasks.current', return_value=other),
+              patch('boss_web.services.deliver_task.deliver_tasks.cancel') as cancel):
+            response = client.post(f"/api/workflow/control/tasks/{job['id']}/cancel")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['status'], 'stopping')
+            cancel.assert_not_called()
+        self.assertTrue((self.ws.root / 'runs' / 'panel-jobs' / f"{job['id']}.stop").is_file())
+
+    def test_workflow_waiter_cancels_only_its_own_delivery_and_waits_for_results(self):
+        with patch.object(sys, 'path', [str(WORKFLOW), *sys.path]):
+            from workflow import deliver_round_v2 as worker
+
+        stop = self.root / 'send.stop'
+        stop.touch()
+        running = {'task_id': 'dv_owned', 'status': 'running'}
+        cancelled = {**running, 'status': 'cancelled', 'items': []}
+        with (patch.object(worker, 'STOP_FILE', stop),
+              patch.object(worker.time, 'sleep'),
+              patch.object(worker, 'api', side_effect=[running, {}, running, cancelled]) as api):
+            self.assertEqual(worker.wait_task('dv_owned'), cancelled)
+            self.assertEqual(api.call_args_list, [
+                call('GET', '/api/deliver/status', timeout=20),
+                call('POST', '/api/deliver/dv_owned/cancel', timeout=5),
+                call('GET', '/api/deliver/status', timeout=20),
+                call('GET', '/api/deliver/status', timeout=20),
+            ])
+
+        with (patch.object(worker, 'STOP_FILE', stop),
+              patch.object(worker, 'api', return_value={**running, 'task_id': 'dv_other'}) as api):
+            self.assertEqual(worker.wait_task('dv_owned')['status'], 'changed')
+            api.assert_called_once_with('GET', '/api/deliver/status', timeout=20)
 
     def test_queue_entry_points_capture_a_snapshot_and_keep_it_on_retry(self):
         snap = snapshot.build(self.ws)

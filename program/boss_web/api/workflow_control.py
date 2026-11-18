@@ -815,15 +815,7 @@ def create_task(body: TaskBody,
 def cancel_task(job_id: str):
     root, _ = paths()
     try:
-        store = TaskStore(root)
-        job = store.get(job_id)
-        result = store.cancel(job_id)
-        if job['status'] == 'running' and job['action'] in {'send', 'auto_send'}:
-            from ..services.deliver_task import deliver_tasks
-            current = deliver_tasks.current()
-            if current is not None and current.status == 'running':
-                deliver_tasks.cancel(current.task_id)
-        return result
+        return TaskStore(root).cancel(job_id)
     except ValueError as exc:
         raise ValidationWebError(str(exc)) from exc
 

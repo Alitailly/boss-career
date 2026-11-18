@@ -1814,8 +1814,9 @@ def send(ready: list[dict], usage: dict, cap: int, daily_cap: int, chunk: int,
 
 
 def wait_task(task_id: str, timeout: float = 1800) -> dict:
+    """等待本批发送结果；收到停止标记时只取消本批任务。"""
     deadline = time.time() + timeout
-    last: dict = {}
+    cancel_sent = False
     while time.time() < deadline:
         try:
             last = api("GET", "/api/deliver/status", timeout=20)
@@ -1826,6 +1827,14 @@ def wait_task(task_id: str, timeout: float = 1800) -> dict:
             return {"status": "changed", "task_id": last.get("task_id")}
         if last.get("status") in {"done", "error", "cancelled"}:
             return last
+        if not cancel_sent and STOP_FILE is not None and STOP_FILE.exists():
+            try:
+                api("POST", f"/api/deliver/{task_id}/cancel", timeout=5)
+            except (requests.RequestException, RuntimeError):
+                # 下次轮询先确认任务还在，避免把停止请求发给新的批次。
+                pass
+            else:
+                cancel_sent = True
         time.sleep(2)
     return {"status": "timeout", "task_id": task_id}
 
