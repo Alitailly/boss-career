@@ -259,7 +259,8 @@ class Workspace:
     def activate_plan(self, plan_id: str, *, actor: str = "user", reason: str = "") -> dict[str, Any]:
         """把某份方案设为活动方案；返回生效说明。
 
-        生效边界是"下一个任务"：已经取过快照的任务继续用旧快照，新任务才读新方案。
+        新任务读取新方案；已绑定旧快照的排队任务在执行前重新核对，
+        已开始使用快照的任务以该次输入为准。
         """
         plan = self.get("plan", plan_id)
         if plan.get("schema") != PLAN_SCHEMA:

@@ -22,7 +22,7 @@ from boss_core import strategies as strategies_mod
 
 from . import workflow as view
 from ..errors import ValidationWebError
-from ..services.workflow_tasks import ACTIONS, TaskStore
+from ..services.workflow_tasks import ACTIONS, TaskStore, task_plan_binding
 
 router = APIRouter()
 
@@ -771,8 +771,7 @@ def ai_create_task(body: TaskBody, x_actor: str | None = Header(default=None, al
         "only": jobs,
         "limit": body.limit,
         "profile_version": _profile_version(snap),
-        "plan_id": snap["plan"]["id"],
-        "snapshot_fingerprint": snap["fingerprint"],
+        **task_plan_binding(snap),
     }
     store = TaskStore(ws.root)
     if body.idempotency_key:

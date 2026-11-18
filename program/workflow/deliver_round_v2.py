@@ -37,8 +37,10 @@ from workflow_env import CODE_ROOT, api_base, ensure_core_path, workspace_root
 
 ensure_core_path()
 from boss_core import compat as core  # noqa: E402 - 先放好核心库路径再导入
+from boss_core.errors import StaleInput  # noqa: E402
 from boss_core.jsonio import digest as core_digest  # noqa: E402
 from boss_core.models import c_scalar, c_values  # noqa: E402
+from boss_core.snapshot import require_task_fingerprint  # noqa: E402
 from boss_core.strategies import resolve as resolve_strategy  # noqa: E402
 
 BASE = api_base()
@@ -1998,6 +2000,7 @@ def main() -> int:
     ap.add_argument("--send-ready-only", action="store_true", help="仅发送指定且已审核的稿件，不生成新稿")
     ap.add_argument("--approved-file", default="", help="面板生成的稿件审核指纹文件")
     ap.add_argument("--expected-profile", default="", help="任务创建时的资料版本；不一致则拒绝")
+    ap.add_argument("--expected-snapshot", default="", help="任务创建时的方案指纹；不一致则拒绝")
     ap.add_argument("--stop-file", default="", help="面板停止后续批次的标记")
     ap.add_argument("--grant-deadline", type=float, default=0.0,
                     help="授权窗口结束的 epoch 秒；到点停在下一批之前（0 = 不限）")
@@ -2082,7 +2085,7 @@ def main() -> int:
     except Busy as exc:
         print(f"[5] {exc}")
         return 5
-    except RuntimeError as exc:
+    except (RuntimeError, StaleInput) as exc:
         print(f"[7] {exc}")
         return 7
 
@@ -2304,6 +2307,9 @@ def run(args, do_refill: bool) -> int:
         return 7
     if stop_requested():
         return 8
+    expected = getattr(args, "expected_snapshot", "")
+    if expected:
+        require_task_fingerprint(snapshot_state(), expected)
     try:
         health = api("GET", "/api/system/health", timeout=10)
     except Exception as exc:

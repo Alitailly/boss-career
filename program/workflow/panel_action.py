@@ -8,6 +8,7 @@ import time
 from workflow_env import app_source
 sys.path.insert(0, str(app_source()))
 import deliver_round_v2 as dr
+from boss_core.snapshot import require_task_fingerprint
 
 
 def main():
@@ -26,6 +27,10 @@ def main():
         raise RuntimeError('求职资料已变化，请重新创建任务')
     if stop.exists():
         return 8
+    if args.action in {'collect', 'match'}:
+        fingerprint = str(payload.get('snapshot_fingerprint') or '')
+        if fingerprint:
+            require_task_fingerprint(dr.snapshot_state(), fingerprint)
     if args.action == 'collect':
         import collector as col
         with dr.Lock('dsh-boss-collector-1'):
@@ -43,12 +48,6 @@ def main():
         return feedback_sync.main()
     # 补分任务会把「当前简历还没打分」的岗位 id 放进 payload；没有就用空列表（= 匹配后端自选范围）
     job_ids = [str(x) for x in (payload.get('job_ids') or []) if str(x).strip()]
-    # 任务创建时冻结的方案/快照：执行时对不上就拒绝，不拿"当前活动方案"顶替
-    fingerprint = str(payload.get('snapshot_fingerprint') or '')
-    if fingerprint:
-        state = dr.snapshot_state()
-        if str(state.get('fingerprint') or '') != fingerprint:
-            raise RuntimeError('方案或资料在任务创建后变过，这个任务不能再用旧快照执行；请重新创建任务')
     request = {'resume_id': dr.load_config()['resume_id'], 'job_ids': job_ids}
     if int(payload.get('limit') or 0):
         # 上限必须跟着请求走：否则 job_ids 为空时后端会按"全库"重新选一遍

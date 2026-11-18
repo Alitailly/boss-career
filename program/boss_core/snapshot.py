@@ -1,7 +1,7 @@
 """有效快照：一次任务/一轮采集到底用哪份资料、哪份方案、哪版策略。
 
-快照是**冻结**的：任务创建时取一次，之后用户改方案不影响它；新任务取新的。
-这样"旧任务用旧版本算完"和"新版本立即生效"不矛盾，也能在结果里写清用了什么。
+快照记录一份有效的方案、资料和策略。绑定快照的排队任务在执行前核对指纹，
+开始执行后用已经读取的快照装配该次输入。
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import conditions
-from .errors import InvalidInput, MissingConfiguration, NotFound
+from .errors import InvalidInput, MissingConfiguration, NotFound, StaleInput
 from .jsonio import digest, now_iso
 from .models import STAGES, c_mode, c_scalar, c_values
 
@@ -257,6 +257,13 @@ def build(ws, *, plan_id: str | None = None, candidate_id: str | None = None) ->
     })
     body["stages"] = stages_status(plan, strategies, search, candidate)
     return body
+
+
+def require_task_fingerprint(snap: dict[str, Any], expected: str) -> None:
+    """已绑定快照的任务只能使用同一份活动方案和资料。"""
+    if expected and snap.get("fingerprint") != expected:
+        raise StaleInput("方案、资料或策略在任务创建后已变化，请重新创建任务",
+                         field="snapshot_fingerprint")
 
 
 def _stage2_threshold(strategy: dict[str, Any] | None) -> int | None:

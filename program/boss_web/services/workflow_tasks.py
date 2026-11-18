@@ -14,6 +14,7 @@ import time
 import uuid
 
 ACTIONS = {"collect", "match", "prepare", "send", "feedback", "auto_send"}
+PLAN_ACTIONS = {"collect", "match", "prepare"}
 
 #: 需要走"逐条正文指纹"的发送类动作。`auto_send` 只是来源不同（由范围授权挑人），
 #: 执行链与 `send` 完全一致——不另开一条发送路径。
@@ -23,6 +24,10 @@ _JID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 #: 执行器是否真的在跑。面板要能回答"到点会不会有人执行"，不能只看计划存不存在。
 RUNNER: dict = {"alive": False, "since": 0.0, "tick_seconds": 2}
+
+
+def task_plan_binding(snap: dict) -> dict[str, str]:
+    return {"plan_id": snap["plan"]["id"], "snapshot_fingerprint": snap["fingerprint"]}
 
 
 def process_alive(pid):
@@ -466,6 +471,8 @@ def build_command(code: Path, root: Path, job: dict):
         if action == "prepare":
             only = [str(x) for x in (payload.get("only") or []) if str(x).strip()]
             cmd += ["--prepare-only", "--max-prepare", str(len(only) or payload["limit"])]
+            if payload.get("snapshot_fingerprint"):
+                cmd += ["--expected-snapshot", payload["snapshot_fingerprint"]]
             if only:
                 cmd += ["--only", ",".join(only)]
         else:

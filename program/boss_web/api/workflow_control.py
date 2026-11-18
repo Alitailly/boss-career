@@ -15,11 +15,13 @@ import uuid
 from fastapi import APIRouter, Header
 from pydantic import BaseModel, Field
 
+from boss_core import compat
+
 from . import workflow as view
 from ..errors import ConflictError, ValidationWebError
 from ..services import authz, auto_send
 from ..services.resume_store import list_resumes, load_resume, load_llm_parse, load_analysis
-from ..services.workflow_tasks import TaskStore
+from ..services.workflow_tasks import PLAN_ACTIONS, TaskStore, task_plan_binding
 
 router = APIRouter()
 
@@ -750,7 +752,8 @@ def create_task(body: TaskBody,
         from ..services.delivery_control import ensure_available
         ensure_available()
     from ..services.workflow_context import effective_profile
-    profile = effective_profile(root)
+    snap = compat.load(root) if body.action in PLAN_ACTIONS else None
+    profile = compat.delivery_profile(snap) if snap else effective_profile(root)
     if body.action in {"match", "prepare", "send"} and not profile.get("version"):
         raise ValidationWebError("还没有已采用的简历资料，请先确认简历与个人方案")
     payload = {"profile_version": str(profile.get("version") or ""), "limit": body.limit}
@@ -790,17 +793,19 @@ def create_task(body: TaskBody,
         if any(not value or hashes.get(jid) != value for jid, value in body.approved.items()):
             raise ConflictError("待发稿件或资料已变，请刷新后重新审核")
         payload["approved"] = body.approved
+    # 保留旧回执的幂等键口径，重复提交应回到原任务和原快照。
+    request_payload = {**payload, **task_plan_binding(snap)} if snap else payload
     try:
         store = TaskStore(root)
         if idempotency_key and body.due is None:
             request_hash = hashlib.sha256(json.dumps({'action': body.action, 'payload': payload},
                                                      sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-            payload['request_hash'] = request_hash
-            task, created = store.add_idempotent(body.action, payload, idempotency_key)
+            task, created = store.add_idempotent(body.action, {**request_payload, 'request_hash': request_hash},
+                                                 idempotency_key)
             if not created and (task.get('payload') or {}).get('request_hash') != request_hash:
                 raise ConflictError('这个幂等键已经用于另一份任务，请为新请求使用新键')
         else:
-            task = store.add(body.action, payload, body.due)
+            task = store.add(body.action, request_payload, body.due)
         return background_receipt(task)
     except ValueError as exc:
         raise ValidationWebError(str(exc)) from exc
