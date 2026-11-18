@@ -14,6 +14,8 @@ import boss_db
 from boss_core import snapshot
 from boss_core.workspace import Workspace
 from boss_web.app import create_app
+from boss_web.services import single_scoring, workflow_context
+from boss_web.services.resume_store import save_resume
 from boss_web.services.workflow_tasks import build_command
 
 
@@ -83,6 +85,44 @@ class TaskSnapshotTests(unittest.TestCase):
                                       capture_output=True, encoding='utf-8', timeout=10)
                 self.assertEqual(proc.returncode, 7, proc.stdout + proc.stderr)
                 self.assertIn('任务创建后已变化', proc.stdout)
+
+    def test_matching_endpoint_rechecks_fingerprint_even_with_cached_plan(self):
+        queued = workflow_context.snapshot(refresh=True)
+        self.activate_plan('new query')
+        with TestClient(create_app()) as client:
+            response = client.post('/api/match/analyze', json={
+                'resume_id': 'unused', 'snapshot_fingerprint': queued['fingerprint'],
+            })
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()['code'], 'stale_input')
+
+    def test_scoring_context_uses_only_its_bound_snapshot(self):
+        resume = save_resume('Fictional resume')
+        self.candidate = self.ws.save_candidate({
+            **self.candidate,
+            'resume': {'resume_id': resume.resume_id},
+            'scoring_material': {
+                'text': 'Bound scoring material', 'confirmed': True,
+                'resume_id': resume.resume_id, 'source_sha': single_scoring.source_sha(resume),
+                'facts_sha': single_scoring.facts_sha(self.candidate),
+            },
+        })
+        strategy = self.ws.save_strategy({'stage': 'matching', 'content': {
+            'criteria': 'Use the original scoring rules', 'evaluation': {'batch': 2},
+        }})
+        plan = self.ws.save_plan({'candidate_id': self.candidate['id'],
+                                  'strategies': {'matching': strategy['id']},
+                                  'runtime': {'min_score': 73}})
+        self.ws.activate_plan(plan['id'])
+        bound = snapshot.build(self.ws)
+        self.activate_plan('new plan')
+        with patch.object(workflow_context, 'snapshot', side_effect=AssertionError('reloaded active plan')):
+            context = single_scoring.context(resume, snap=bound)
+        self.assertEqual(context['snapshot']['fingerprint'], bound['fingerprint'])
+        self.assertEqual(context['material']['text'], 'Bound scoring material')
+        self.assertEqual(context['standard']['text'], 'Use the original scoring rules')
+        self.assertEqual(context['threshold'], 73)
+        self.assertEqual(context['limits']['stage1_batch'], 2)
 
 
 if __name__ == '__main__':

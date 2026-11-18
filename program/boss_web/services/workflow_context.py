@@ -20,7 +20,7 @@ from boss_core import strategies as strategies_mod
 from boss_core.errors import CoreError
 from boss_core.workspace import Workspace
 
-_CACHE: dict[str, Any] = {"snap": None, "at": 0.0, "fp": None}
+_CACHE: dict[str, Any] = {"snap": None, "at": 0.0, "root": None}
 _TTL = 5.0
 
 
@@ -38,7 +38,7 @@ def _root() -> Path | None:
 
 def invalidate() -> None:
     """丢掉缓存（配置保存后调用，让下一次执行立即用新值）。"""
-    _CACHE.update({"snap": None, "at": 0.0, "fp": None})
+    _CACHE.update({"snap": None, "at": 0.0, "root": None})
 
 
 def effective_profile(root: Path) -> dict[str, Any]:
@@ -58,14 +58,14 @@ def effective_profile(root: Path) -> dict[str, Any]:
     return value
 
 
-def snapshot() -> dict[str, Any] | None:
+def snapshot(*, refresh: bool = False) -> dict[str, Any] | None:
     """当前有效快照；没有工作区/没活动方案时返回 None。"""
     now = time.monotonic()
-    if _CACHE["snap"] is not None and now - float(_CACHE["at"]) < _TTL:
-        return _CACHE["snap"]
     root = _root()
     if root is None:
         return None
+    if not refresh and _CACHE["root"] == root and now - float(_CACHE["at"]) < _TTL:
+        return _CACHE["snap"]
     ws = Workspace(root)
     if not ws.exists():
         return None
@@ -73,25 +73,29 @@ def snapshot() -> dict[str, Any] | None:
         snap = snapshot_mod.build(ws)
     except CoreError:
         return None
-    _CACHE.update({"snap": snap, "at": now})
+    _CACHE.update({"snap": snap, "at": now, "root": root})
     return snap
 
 
-def stage(stage_name: str) -> dict[str, Any]:
+def stage(stage_name: str, *, snap: dict[str, Any] | None = None) -> dict[str, Any]:
     """某阶段解析后的策略；没绑定时返回内置模板。"""
-    snap = snapshot()
     if snap is None:
+        snap = snapshot()
+    if not snap:
         return {"source": "builtin", "id": None, "content": strategies_mod.builtin(stage_name),
                 "params": {}}
     return strategies_mod.resolve(snap, stage_name)
 
 
-def render(stage_name: str, key: str, extra: dict[str, Any] | None = None) -> str:
+def render(stage_name: str, key: str, extra: dict[str, Any] | None = None, *,
+           snap: dict[str, Any] | None = None) -> str:
     """渲染策略里的提示词片段（如 `matching.stage1.system`）；缺变量抛 `MissingConfiguration`。
 
     `extra` 用来补当次调用的变量（简历原文、目标岗位块等），不污染全局快照。
     """
-    content = stage(stage_name).get("content") or {}
+    if snap is None:
+        snap = snapshot() or {}
+    content = stage(stage_name, snap=snap).get("content") or {}
     template: Any = content
     for part in key.split("."):
         template = template.get(part) if isinstance(template, dict) else None
@@ -100,7 +104,6 @@ def render(stage_name: str, key: str, extra: dict[str, Any] | None = None) -> st
         for part in key.split("."):
             builtin = builtin.get(part) if isinstance(builtin, dict) else None
         template = builtin or ""
-    snap = snapshot()
     # 没有工作区/没有方案时也用 `general` 预设补齐变量：内置模板是方向中性的，
     # 不该因为"读不到方案"就退回某个人的提示词（见 boss_core.templates）。
     ctx = dict(strategies_mod.context(snap))
@@ -108,9 +111,9 @@ def render(stage_name: str, key: str, extra: dict[str, Any] | None = None) -> st
     return strategies_mod.render(str(template), ctx)
 
 
-def limits() -> dict[str, Any]:
+def limits(*, snap: dict[str, Any] | None = None) -> dict[str, Any]:
     """输入装配参数：JD 截断上限、初筛批量。"""
-    content = stage("matching").get("content") or {}
+    content = stage("matching", snap=snap).get("content") or {}
     stage1 = content.get("stage1") or {}
     stage2 = content.get("stage2") or {}
     evaluation = content.get("evaluation") or {}
@@ -131,9 +134,10 @@ def stage2_min_score(fallback: int = 75) -> int:
     return int(value) if isinstance(value, (int, float)) else int(fallback)
 
 
-def admit_min_score(fallback: int = 0) -> int:
+def admit_min_score(fallback: int = 0, *, snap: dict[str, Any] | None = None) -> int:
     """准入门槛：来自方案的运行偏好。"""
-    snap = snapshot()
+    if snap is None:
+        snap = snapshot()
     if not snap:
         return int(fallback)
     return int((snap.get("thresholds") or {}).get("admit_min_score") or fallback)

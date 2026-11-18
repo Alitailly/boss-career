@@ -34,6 +34,7 @@ class MatchBody(BaseModel):
     job_ids: list[str] = Field(default_factory=list)
     crawl_task_id: str = ""
     limit: int = Field(default=0, ge=0, le=150)
+    snapshot_fingerprint: str = ""
 
 
 class GreetingBody(BaseModel):
@@ -77,6 +78,7 @@ def start_match(body: MatchBody) -> dict[str, Any]:
         job_ids=body.job_ids,
         crawl_task_id=body.crawl_task_id,
         limit=body.limit,
+        snapshot_fingerprint=body.snapshot_fingerprint,
     )
     snap = task.snapshot()
     if "scope" not in snap:

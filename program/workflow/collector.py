@@ -629,8 +629,10 @@ def one_cycle(st: dict, cfg: dict, resume_id: str) -> str:
     else:
         todo = todo_pool[:int(cfg.get("match_batch") or 25)]
         if todo:
-            m = dr.api("POST", "/api/match/analyze",
-                       {"resume_id": resume_id, "job_ids": todo}, timeout=30)
+            m = dr.api("POST", "/api/match/analyze", {
+                "resume_id": resume_id, "job_ids": todo,
+                "snapshot_fingerprint": dr.snapshot_state()["fingerprint"],
+            }, timeout=30)
             tid = str(m.get("task_id") or "")
             if tid:
                 st["match_task"] = {"task_id": tid, "jobs": len(todo),

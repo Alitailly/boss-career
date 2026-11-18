@@ -701,7 +701,7 @@ def ai_preview_stage(body: PreviewStageBody,
         raise MissingConfiguration(f"找不到简历：{resume_id}") from exc
 
     from ..services import single_scoring
-    ctx = single_scoring.context(resume)
+    ctx = single_scoring.context(resume, snap=snap)
     client = LLMClient(cfg)
     jobs = [match_task._load_job(jid) for jid in dict.fromkeys(body.job_ids)]
     present = [job for job in jobs if job is not None]

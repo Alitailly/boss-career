@@ -52,8 +52,8 @@ def main():
     if int(payload.get('limit') or 0):
         # 上限必须跟着请求走：否则 job_ids 为空时后端会按"全库"重新选一遍
         request['limit'] = int(payload['limit'])
-    if payload.get('plan_id'):
-        request['plan_id'] = str(payload['plan_id'])
+    if payload.get('snapshot_fingerprint'):
+        request['snapshot_fingerprint'] = str(payload['snapshot_fingerprint'])
     task = dr.api('POST', '/api/match/analyze', request)
     task_id = task.get('task_id')
     if not task_id:

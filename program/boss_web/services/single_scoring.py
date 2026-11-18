@@ -100,32 +100,32 @@ def candidate_material(resume: Any = None, *, snap: dict | None = None) -> dict[
             'sha': digest(text), 'characters': len(text)}
 
 
-def resolve_standard() -> dict[str, Any]:
+def resolve_standard(*, snap: dict[str, Any] | None = None) -> dict[str, Any]:
     from . import match_task as mt
-    stage = wctx.stage('matching')
+    stage = wctx.stage('matching', snap=snap)
     content = stage.get('content') or {}
     if 'criteria' in content:
         # 复用严格变量渲染与校验；渲染失败不能静默换一套个人偏好。
-        criteria = mt.resolve_system_prompt('stage2.system', mt.SYSTEM_PROMPT)['criteria']
+        criteria = mt.resolve_system_prompt('stage2.system', mt.SYSTEM_PROMPT, snap=snap)['criteria']
         origin, legacy = ('builtin' if stage.get('source') == 'builtin' else 'strategy'), False
     else:
-        first = mt.resolve_system_prompt('stage1.system', mt.STAGE1_SYSTEM_PROMPT)
-        second = mt.resolve_system_prompt('stage2.system', mt.SYSTEM_PROMPT)
+        first = mt.resolve_system_prompt('stage1.system', mt.STAGE1_SYSTEM_PROMPT, snap=snap)
+        second = mt.resolve_system_prompt('stage2.system', mt.SYSTEM_PROMPT, snap=snap)
         criteria = '# 原初筛标准（兼容保留）\n' + first['text'] + '\n\n# 原详评标准（兼容保留）\n' + second['text']
         origin, legacy = second['origin'], True
     system = '# 当前个人评分标准\n' + criteria + '\n\n# 程序执行要求\n' + EXECUTION
     return {'text': criteria, 'system': system, 'origin': origin, 'legacy': legacy}
 
 
-def context(resume: Any) -> dict[str, Any]:
-    snap = copy.deepcopy(wctx.snapshot() or {})
+def context(resume: Any, *, snap: dict[str, Any] | None = None) -> dict[str, Any]:
+    snap = copy.deepcopy((wctx.snapshot() or {}) if snap is None else snap)
     material = candidate_material(resume, snap=snap)
     if not material['ready']:
         raise MissingConfiguration(material['note'], field='candidate.scoring_material',
                                    next_steps=['核对评分用候选人材料，再 PUT /api/ai/scoring-material 确认'])
-    standard = resolve_standard()
+    standard = resolve_standard(snap=snap)
     return {'material': material, 'standard': standard, 'snapshot': snap,
-            'threshold': wctx.admit_min_score(0), 'limits': wctx.limits(),
+            'threshold': wctx.admit_min_score(0, snap=snap), 'limits': wctx.limits(snap=snap),
             'conditions': {key: (snap.get('plan') or {}).get(key) for key in ('target', 'requirements', 'salary', 'availability')},
             'versions': snap.get('versions') or {}}
 
