@@ -130,14 +130,24 @@ def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
     """外部招呼语 → 分析正文 + 台账 `validated` 事件（进原有待审队列）。"""
     from .resume_store import load_analysis, update_greetings
 
-    analysis_id = str(work.get("analysis_id") or "")
-    if not analysis_id:
+    primary_analysis = str(work.get("analysis_id") or "")
+    analysis_by_job = work.get("analysis_by_job") or {
+        job["job_id"]: primary_analysis for job in work.get("jobs") or [] if primary_analysis
+    }
+    if not analysis_by_job:
         raise InvalidInput("这个招呼语工作项没记录分析来源，无法写进待审队列",
                            field="analysis_id",
                            next_steps=["prepare 时由服务端带上 analysis_id"])
-    analysis = load_analysis(analysis_id)
-    index = {str(it.get("encrypt_job_id")): it for it in analysis.get("matches") or []
-             if isinstance(it, dict)}
+    analyses = {}
+    items = {}
+    for analysis_id in dict.fromkeys(analysis_by_job.values()):
+        try:
+            analysis = analyses[analysis_id] = load_analysis(analysis_id)
+        except FileNotFoundError as exc:
+            raise MissingConfiguration(f"分析 {analysis_id} 已不存在，请重新准备写稿工作项",
+                                       field="analysis_id") from exc
+        items[analysis_id] = {str(it.get("encrypt_job_id")): it
+                              for it in analysis.get("matches") or [] if isinstance(it, dict)}
     snap = _snapshot(ws, work)
     rules = compat.delivery_policy(snap)
     profile = compat.delivery_profile(snap)
@@ -149,7 +159,8 @@ def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
     for result in payload.get("results") or []:
         jid = str(result.get("job_id"))
         text = str(result.get("text") or "").strip()
-        item = index.get(jid)
+        analysis_id = analysis_by_job.get(jid)
+        item = items.get(analysis_id, {}).get(jid)
         if item is None:
             raise MissingConfiguration(f"分析 {analysis_id} 里没有这个岗位：{jid}",
                                        field="analysis_id")
@@ -160,21 +171,25 @@ def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
             raise InvalidInput("招呼语没有通过原有正文校验：" +
                                "；".join(str(i.get("message") or i) for i in issues[:3]),
                                field="text", detail={"issues": issues})
-        meta = _greeting_meta(work, item, analysis, text, rules, profile, prefs_version)
+        meta = _greeting_meta(analysis_id, item, analyses[analysis_id], text, rules, profile, prefs_version)
         meta["writer"] = "external_ai"
         meta["model"] = "external-skill"
         meta["checks"] = {"format": "ok", "facts": "ok:external_review",
                           "business": "external_ai"}
         validated[jid] = (text, meta)
 
-    update_greetings(analysis_id, {jid: text for jid, (text, _) in validated.items()})
+    greetings: dict[str, dict[str, str]] = {}
+    for jid, (text, meta) in validated.items():
+        greetings.setdefault(meta["analysis_id"], {})[jid] = text
+    update_greetings(greetings)
     drafts = []
     for jid, (text, meta) in validated.items():
         _append_event(ws, "validated", jid, text=text, **meta)
-        drafts.append({"job_id": jid, "draft_id": f"{analysis_id}:{jid}",
+        analysis_id = meta["analysis_id"]
+        drafts.append({"job_id": jid, "analysis_id": analysis_id, "draft_id": f"{analysis_id}:{jid}",
                        "sha": meta["sha"], "chars": len(text),
                        "review_pending": True})
-    return {"analysis_id": analysis_id, "stage": "greeting", "drafts": drafts,
+    return {"analysis_id": primary_analysis, "stage": "greeting", "drafts": drafts,
             "queue": str(_queue_path(ws))}
 
 
@@ -200,11 +215,10 @@ def _grounding_issues(text: str, used_facts: list[Any], snap: dict[str, Any]) ->
     return issues
 
 
-def _greeting_meta(work: dict[str, Any], item: dict[str, Any], analysis: dict[str, Any],
+def _greeting_meta(analysis_id: str, item: dict[str, Any], analysis: dict[str, Any],
                    text: str, rules: dict[str, Any], profile: dict[str, Any],
                    prefs_version: str) -> dict[str, Any]:
     """台账元数据：字段与 `deliver_round_v2._greeting_meta` 一致，发送前复核才认。"""
-    analysis_id = str(work.get("analysis_id") or "")
     return {
         "analysis_id": analysis_id,
         "company": str(item.get("brand_name") or ""),

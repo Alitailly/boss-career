@@ -92,6 +92,7 @@ def _type_name(value: Any) -> str:
 
 def create(ws, *, stage: str, jobs: list[dict[str, Any]], snapshot: dict[str, Any],
            strategy: dict[str, Any] | None, analysis_id: str | None = None,
+           analysis_by_job: dict[str, str] | None = None,
            session_id: str | None = None, actor: str = "ai") -> dict[str, Any]:
     """准备一个工作项；不调模型、不产生发送副作用。"""
     schema = _item_schema(stage)
@@ -136,6 +137,8 @@ def create(ws, *, stage: str, jobs: list[dict[str, Any]], snapshot: dict[str, An
         "schema": schema,
         "result": None,
     }
+    if analysis_by_job:
+        payload["analysis_by_job"] = analysis_by_job
     payload["input_hash"] = _hash(payload)
     write_json(ws.tasks_dir() / f"{work_id}.json", payload)
     ws.audit(actor, "external.prepare", work_id,
@@ -408,7 +411,8 @@ def _text_sha(text: Any) -> str:
 
 def _hash(payload: dict[str, Any]) -> str:
     """输入指纹：不含 id/时间/状态，只算真正影响结果的字段。"""
-    body = {k: payload[k] for k in ("stage", "snapshot", "strategy", "jobs", "schema") if k in payload}
+    fields = ("stage", "snapshot", "strategy", "jobs", "schema", "analysis_by_job")
+    body = {k: payload[k] for k in fields if k in payload}
     return digest(body)
 
 

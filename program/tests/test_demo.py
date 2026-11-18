@@ -192,14 +192,22 @@ class DemoTests(unittest.TestCase):
                 job_id = 'demo-manufacturing-intern'
                 second_job = 'demo-incomplete-offer'
                 job_ids = [job_id, second_job]
-                work = call('POST', '/api/ai/work', json={
-                    'stage': 'matching', 'job_ids': job_ids})['work']
-                result = call('POST', f"/api/ai/work/{work['work_id']}/submit", json={
-                    'results': [{'job_id': job_id, 'score': 80,
-                                 'verdict': 'QA断言：RAG经验对应知识库职责，实习安排待核实。'},
-                                {'job_id': second_job, 'score': 70, 'verdict': 'QA断言：职责比例待核实。'}]})
-                self.assertEqual(result['status'], 'applied')
-                analysis_id = result['applied']['analysis_id']
+                analyses = {}
+                for jid, score, verdict in [
+                    (job_id, 80, 'QA断言：RAG经验对应知识库职责，实习安排待核实。'),
+                    (second_job, 70, 'QA断言：职责比例待核实。'),
+                ]:
+                    work = call('POST', '/api/ai/work', json={
+                        'stage': 'matching', 'job_ids': [jid]})['work']
+                    result = call('POST', f"/api/ai/work/{work['work_id']}/submit", json={
+                        'results': [{'job_id': jid, 'score': score, 'verdict': verdict}]})
+                    self.assertEqual(result['status'], 'applied')
+                    analyses[jid] = result['applied']['analysis_id']
+                    if jid == job_id:
+                        incomplete = client.post('/api/ai/work', json={
+                            'stage': 'greeting', 'job_ids': job_ids})
+                        self.assertEqual(incomplete.status_code, 422, incomplete.text)
+                        self.assertEqual(incomplete.json()['detail']['job_ids'], [second_job])
                 work = call('POST', '/api/ai/work', json={
                     'stage': 'greeting', 'job_ids': job_ids})['work']
                 submit_url = f"/api/ai/work/{work['work_id']}/submit"
@@ -210,16 +218,21 @@ class DemoTests(unittest.TestCase):
                     'results': [first, {**second, 'text': '您好，我有99年项目经验。'}]})
                 self.assertEqual(rejected.status_code, 422, rejected.text)
                 from boss_web.services.resume_store import load_analysis
-                analysis = load_analysis(analysis_id)
-                self.assertEqual([item['greeting'] for item in analysis['matches']], ['', ''])
+                for analysis_id in analyses.values():
+                    self.assertEqual(load_analysis(analysis_id)['matches'][0]['greeting'], '')
                 queue = self.root / 'workspace' / 'greeting' / 'queue.jsonl'
                 self.assertFalse(queue.exists())
 
                 submission = {'results': [first, second]}
                 result = call('POST', submit_url, json=submission)
                 self.assertEqual(result['status'], 'applied')
+                self.assertEqual(work['analysis_by_job'], analyses)
                 self.assertEqual(len(result['applied']['drafts']), 2)
                 self.assertTrue(all(d['review_pending'] for d in result['applied']['drafts']))
+                for input_draft, saved_draft in zip(submission['results'], result['applied']['drafts']):
+                    analysis_id = analyses[input_draft['job_id']]
+                    self.assertEqual(saved_draft['analysis_id'], analysis_id)
+                    self.assertEqual(load_analysis(analysis_id)['matches'][0]['greeting'], input_draft['text'])
                 duplicate = call('POST', submit_url, json=submission)
                 self.assertTrue(duplicate['duplicate'])
                 self.assertEqual(len(queue.read_text(encoding='utf-8').splitlines()), 2)

@@ -531,25 +531,30 @@ def _patch_matches(
     analysis_id: str, updates: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """一次事务内更新同一份分析的多个岗位，返回更新后的岗位。"""
+    with _analysis_write(analysis_id) as (conn, payload):
+        return _apply_match_patches(conn, analysis_id, payload, updates)
+
+
+def _apply_match_patches(conn, analysis_id: str, payload: dict[str, Any],
+                         updates: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     pending = dict(updates)
     updated = {}
-    with _analysis_write(analysis_id) as (conn, payload):
-        matches = payload.get("matches") or []
-        for item in matches:
-            job_id = item.get("encrypt_job_id") if isinstance(item, dict) else None
-            if not isinstance(job_id, str) or job_id not in pending:
-                continue
-            fields = pending.pop(job_id)
-            item.update(fields)
-            item["_patched_fields"] = sorted(set(item.get("_patched_fields") or []) | set(fields))
-            updated[job_id] = item
-        if pending:
-            raise KeyError(next(iter(pending)))
-        payload["matches"] = matches
-        conn.execute(
-            "UPDATE analysis SET payload = ?, top_score = ? WHERE analysis_id = ?",
-            (json.dumps(payload, ensure_ascii=False), _top_score(matches), analysis_id),
-        )
+    matches = payload.get("matches") or []
+    for item in matches:
+        job_id = item.get("encrypt_job_id") if isinstance(item, dict) else None
+        if not isinstance(job_id, str) or job_id not in pending:
+            continue
+        fields = pending.pop(job_id)
+        item.update(fields)
+        item["_patched_fields"] = sorted(set(item.get("_patched_fields") or []) | set(fields))
+        updated[job_id] = item
+    if pending:
+        raise KeyError(next(iter(pending)))
+    payload["matches"] = matches
+    conn.execute(
+        "UPDATE analysis SET payload = ?, top_score = ? WHERE analysis_id = ?",
+        (json.dumps(payload, ensure_ascii=False), _top_score(matches), analysis_id),
+    )
     return updated
 
 
@@ -570,9 +575,14 @@ def update_greeting(analysis_id: str, encrypt_job_id: str, greeting: str) -> dic
     return _patch_match(analysis_id, encrypt_job_id, greeting=greeting)
 
 
-def update_greetings(analysis_id: str, greetings: dict[str, str]) -> None:
-    """整批更新招呼语，任一岗位缺失时整批回滚。"""
-    _patch_matches(analysis_id, {job_id: {"greeting": text} for job_id, text in greetings.items()})
+def update_greetings(greetings: dict[str, dict[str, str]]) -> None:
+    """在同一事务内更新多份分析中的招呼语。"""
+    conn = boss_db.acquire()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for analysis_id, drafts in greetings.items():
+            updates = {job_id: {"greeting": text} for job_id, text in drafts.items()}
+            _apply_match_patches(conn, analysis_id, load_analysis(analysis_id), updates)
 
 
 DELIVER_SENDING = "sending"

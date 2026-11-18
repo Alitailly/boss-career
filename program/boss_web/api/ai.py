@@ -872,9 +872,11 @@ def ai_prepare_work(body: WorkBody, x_actor: str | None = Header(default=None, a
     stage = _strategy_stage(body.stage)
     strategy = strategies_mod.describe(snap, stage)
     jobs = [_job_for(ws, jid) for jid in body.job_ids]
-    analysis_id = _analysis_for(body.stage, jobs)
+    resume_id = str(((snap.get("candidate") or {}).get("resume") or {}).get("resume_id") or "")
+    analyses = _greeting_analyses(body.stage, jobs, resume_id)
     work = external.create(ws, stage=body.stage, jobs=jobs, snapshot=snap,
-                           strategy=strategy, analysis_id=analysis_id,
+                           strategy=strategy, analysis_id=next(iter(analyses.values()), None),
+                           analysis_by_job=analyses,
                            session_id=body.session_id, actor=_actor(x_actor))
     local = bool(strategy.get("executes_locally"))
     return {"ok": True, "work": work,
@@ -885,27 +887,23 @@ def ai_prepare_work(body: WorkBody, x_actor: str | None = Header(default=None, a
             "next": ["POST /api/ai/work/{work_id}/submit"]}
 
 
-def _analysis_for(stage: str, jobs: list[dict[str, Any]]) -> str | None:
-    """招呼语要挂在一份已有分析上：没有匹配结果就没有正式落点。
-
-    面试不走这里（它挂的是会话 id），改稿也不挂分析。
-    """
+def _greeting_analyses(stage: str, jobs: list[dict[str, Any]], resume_id: str) -> dict[str, str]:
+    """准备写稿时为每个岗位记录匹配结果所在的分析。"""
     if stage != "greeting":
-        return None
+        return {}
     from ..services.resume_store import match_index
 
-    index = match_index()
-    ids = []
-    for job in jobs:
-        row = index.get(str(job.get("job_id"))) or {}
-        if row.get("analysis_id"):
-            ids.append(str(row["analysis_id"]))
-    if not ids:
-        raise MissingConfiguration("这个岗位还没有匹配结果，先跑 matching 再准备这个阶段",
+    index = match_index(prefer_resume_id=resume_id)
+    job_ids = [str(job["job_id"]) for job in jobs]
+    analyses = {jid: str(index[jid]["analysis_id"]) for jid in job_ids if jid in index}
+    missing = [jid for jid in job_ids if jid not in analyses]
+    if missing:
+        raise MissingConfiguration("部分岗位还没有匹配结果，先跑 matching 再准备写稿",
                                    field="analysis_id",
+                                   detail={"job_ids": missing},
                                    next_steps=["POST /api/ai/work（stage=matching）并提交结果",
                                                "或 POST /api/ai/tasks（stage=matching）"])
-    return ids[0]
+    return analyses
 
 
 def _strategy_stage(stage: str) -> str:
