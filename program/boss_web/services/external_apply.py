@@ -128,7 +128,7 @@ def _apply_matching(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
 
 def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """外部招呼语 → 分析正文 + 台账 `validated` 事件（进原有待审队列）。"""
-    from .resume_store import load_analysis, update_greeting
+    from .resume_store import load_analysis, update_greetings
 
     analysis_id = str(work.get("analysis_id") or "")
     if not analysis_id:
@@ -145,7 +145,7 @@ def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
     max_chars = int(rules.get("max_len") or 200)
     fact_ids = [fid for fid, _ in compat.candidate_facts(snap)]
 
-    drafts = []
+    validated = {}
     for result in payload.get("results") or []:
         jid = str(result.get("job_id"))
         text = str(result.get("text") or "").strip()
@@ -160,12 +160,16 @@ def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
             raise InvalidInput("招呼语没有通过原有正文校验：" +
                                "；".join(str(i.get("message") or i) for i in issues[:3]),
                                field="text", detail={"issues": issues})
-        update_greeting(analysis_id, jid, text)
         meta = _greeting_meta(work, item, analysis, text, rules, profile, prefs_version)
         meta["writer"] = "external_ai"
         meta["model"] = "external-skill"
         meta["checks"] = {"format": "ok", "facts": "ok:external_review",
                           "business": "external_ai"}
+        validated[jid] = (text, meta)
+
+    update_greetings(analysis_id, {jid: text for jid, (text, _) in validated.items()})
+    drafts = []
+    for jid, (text, meta) in validated.items():
         _append_event(ws, "validated", jid, text=text, **meta)
         drafts.append({"job_id": jid, "draft_id": f"{analysis_id}:{jid}",
                        "sha": meta["sha"], "chars": len(text),

@@ -99,7 +99,7 @@ class DemoTests(unittest.TestCase):
         from boss_web.app import create_app
         with TestClient(create_app()) as client:
             for path, body in [
-                ('/api/auth/qr/start', {}),
+                ('/api/auth/qr', {}),
                 ('/api/crawl/start', {}),
                 ('/api/system/chrome/open', {}),
                 ('/api/platform/resume', {'confirmed': True, 'scope': 'all'}),
@@ -113,6 +113,47 @@ class DemoTests(unittest.TestCase):
             self.assertEqual(client.get('/api/system/health').json()['mode'], 'demo')
             self.assertTrue(client.get('/api/ai/context').json()['demo']['enabled'])
             self.assertEqual(client.get('/api/ai/tasks').json()['items'], [])
+
+    def test_filter_catalogs_stay_local_in_demo(self):
+        self.configure()
+        os.environ['BOSS_PANEL_RUNNER'] = '0'
+        from boss_filter.validation import cached_catalog
+        from boss_web.app import create_app
+        with (
+            patch('requests.sessions.Session.request', side_effect=AssertionError('unexpected network')),
+            patch('boss_filter.validation.cached_catalog', wraps=cached_catalog) as catalog,
+            patch('boss_filter.precision.refresh_locations') as refresh_locations,
+            TestClient(create_app()) as client,
+        ):
+            for path, params in [
+                ('/api/filters/conditions', {}),
+                ('/api/filters/locations', {'city': '北京'}),
+            ]:
+                self.assertEqual(client.get(path, params=params).status_code, 200)
+                for flag in ('true', '1', 'yes', 'on'):
+                    with self.subTest(path=path, flag=flag):
+                        response = client.get(path, params={**params, 'refresh': flag})
+                        self.assertEqual(response.status_code, 409)
+                        self.assertEqual(response.json()['code'], 'offline_demo')
+            catalog.assert_called_once_with(refresh=False)
+            refresh_locations.assert_not_called()
+
+            response = client.get('/api/collection/expects')
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()['code'], 'offline_demo')
+
+    def test_panel_assets_use_static_mount(self):
+        os.environ['BOSS_PANEL_RUNNER'] = '0'
+        from boss_web.app import create_app
+        with TestClient(create_app()) as client:
+            home = client.get('/')
+            self.assertEqual(home.status_code, 200)
+            self.assertIn('/static/css/app.css', home.text)
+            css = client.get('/static/css/app.css')
+            self.assertEqual(css.status_code, 200)
+            self.assertTrue(css.headers['content-type'].startswith('text/css'))
+            self.assertEqual(client.get('/css/app.css').text, home.text)
+            self.assertEqual(client.get('/api/missing').status_code, 404)
 
     def test_local_pipeline_saves_scores_drafts_and_interview_without_network(self):
         self.configure()
@@ -149,20 +190,39 @@ class DemoTests(unittest.TestCase):
                     'source_sha': hashlib.sha256(raw.encode()).hexdigest(),
                     'expected_candidate': candidate['id']})
                 job_id = 'demo-manufacturing-intern'
+                second_job = 'demo-incomplete-offer'
+                job_ids = [job_id, second_job]
                 work = call('POST', '/api/ai/work', json={
-                    'stage': 'matching', 'job_ids': [job_id]})['work']
+                    'stage': 'matching', 'job_ids': job_ids})['work']
                 result = call('POST', f"/api/ai/work/{work['work_id']}/submit", json={
                     'results': [{'job_id': job_id, 'score': 80,
-                                 'verdict': 'QA断言：RAG经验对应知识库职责，实习安排待核实。'}]})
+                                 'verdict': 'QA断言：RAG经验对应知识库职责，实习安排待核实。'},
+                                {'job_id': second_job, 'score': 70, 'verdict': 'QA断言：职责比例待核实。'}]})
                 self.assertEqual(result['status'], 'applied')
-                self.assertTrue(result['applied']['analysis_id'])
+                analysis_id = result['applied']['analysis_id']
                 work = call('POST', '/api/ai/work', json={
-                    'stage': 'greeting', 'job_ids': [job_id]})['work']
+                    'stage': 'greeting', 'job_ids': job_ids})['work']
+                submit_url = f"/api/ai/work/{work['work_id']}/submit"
                 draft = '您好，我有Python和RAG项目经验，关注设备知识库建设，想了解该岗位的具体开发职责。'
-                result = call('POST', f"/api/ai/work/{work['work_id']}/submit", json={
-                    'results': [{'job_id': job_id, 'text': draft, 'facts': ['F1']}]})
+                first = {'job_id': job_id, 'text': draft, 'facts': ['F1']}
+                second = {'job_id': second_job, 'text': '您好，我做过RAG项目，想了解岗位的开发工作。', 'facts': ['F1']}
+                rejected = client.post(submit_url, json={
+                    'results': [first, {**second, 'text': '您好，我有99年项目经验。'}]})
+                self.assertEqual(rejected.status_code, 422, rejected.text)
+                from boss_web.services.resume_store import load_analysis
+                analysis = load_analysis(analysis_id)
+                self.assertEqual([item['greeting'] for item in analysis['matches']], ['', ''])
+                queue = self.root / 'workspace' / 'greeting' / 'queue.jsonl'
+                self.assertFalse(queue.exists())
+
+                submission = {'results': [first, second]}
+                result = call('POST', submit_url, json=submission)
                 self.assertEqual(result['status'], 'applied')
-                self.assertTrue(result['applied']['drafts'][0]['review_pending'])
+                self.assertEqual(len(result['applied']['drafts']), 2)
+                self.assertTrue(all(d['review_pending'] for d in result['applied']['drafts']))
+                duplicate = call('POST', submit_url, json=submission)
+                self.assertTrue(duplicate['duplicate'])
+                self.assertEqual(len(queue.read_text(encoding='utf-8').splitlines()), 2)
                 response = client.get(f'/api/ai/greeting-inputs/{job_id}')
                 self.assertIn(draft, response.text)
                 session = call('POST', '/api/ai/interviews', json={'job_id': job_id})['session']

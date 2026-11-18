@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 
+from .errors import ConflictError
+
 OFFLINE_ENV = 'BOSS_PLATFORM_OFFLINE'
 MARKER = '.boss-career-demo.json'
 SCHEMA = 'boss-career-demo/v1'
@@ -17,6 +19,18 @@ MESSAGE = '离线体验模式已禁用平台操作。请使用本地示例岗位
 
 def enabled() -> bool:
     return os.environ.get(OFFLINE_ENV) == '1'
+
+
+class OfflineDemoError(ConflictError):
+    code = 'offline_demo'
+
+    def __init__(self) -> None:
+        super().__init__(MESSAGE)
+
+
+def require_platform() -> None:
+    if enabled():
+        raise OfflineDemoError()
 
 
 def status() -> dict:
@@ -72,10 +86,8 @@ def configure(folder: Path | str | None = None) -> dict:
     return {'root': str(root), 'sample_count': len(SAMPLES), **status()}
 
 
-def blocked_request(path: str, method: str, query, body: dict) -> bool:
-    """Reject online actions early; RequestControl is the transport-level guard."""
-    if path == '/api/filters/locations' and str(query.get('refresh', '')).lower() in ('true', '1'):
-        return True
+def blocked_request(path: str, method: str, body: dict) -> bool:
+    """Reject platform mutations before creating tasks or changing settings."""
     if method in ('GET', 'HEAD', 'OPTIONS'):
         return False
     if path in ('/api/system/chrome/open', '/api/system/workspace', '/api/platform/resume'):

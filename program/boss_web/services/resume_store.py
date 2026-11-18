@@ -527,29 +527,34 @@ def update_analysis_state(analysis_id: str, status: str, error: str = "") -> Non
                      (status, json.dumps(payload, ensure_ascii=False), analysis_id))
 
 
-def _patch_match(analysis_id: str, encrypt_job_id: str, **fields: Any) -> dict[str, Any]:
-    """改 payload 里某一条 match 的字段，回改后的那条。
-
-    找不到 analysis → `FileNotFoundError`；找不到那条 match → `KeyError`。
-    只 UPDATE 已有行，不新插；`top_score` 列跟着 matches 重新收敛。
-    """
+def _patch_matches(
+    analysis_id: str, updates: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """一次事务内更新同一份分析的多个岗位，返回更新后的岗位。"""
+    pending = dict(updates)
+    updated = {}
     with _analysis_write(analysis_id) as (conn, payload):
         matches = payload.get("matches") or []
         for item in matches:
-            if isinstance(item, dict) and item.get("encrypt_job_id") == encrypt_job_id:
-                item.update(fields)
-                item["_patched_fields"] = sorted(set(item.get("_patched_fields") or []) | set(fields))
-                break
-        else:
-            raise KeyError(encrypt_job_id)
+            job_id = item.get("encrypt_job_id") if isinstance(item, dict) else None
+            if not isinstance(job_id, str) or job_id not in pending:
+                continue
+            fields = pending.pop(job_id)
+            item.update(fields)
+            item["_patched_fields"] = sorted(set(item.get("_patched_fields") or []) | set(fields))
+            updated[job_id] = item
+        if pending:
+            raise KeyError(next(iter(pending)))
         payload["matches"] = matches
         conn.execute(
             "UPDATE analysis SET payload = ?, top_score = ? WHERE analysis_id = ?",
             (json.dumps(payload, ensure_ascii=False), _top_score(matches), analysis_id),
         )
-    return next(
-        m for m in matches if isinstance(m, dict) and m.get("encrypt_job_id") == encrypt_job_id
-    )
+    return updated
+
+
+def _patch_match(analysis_id: str, encrypt_job_id: str, **fields: Any) -> dict[str, Any]:
+    return _patch_matches(analysis_id, {encrypt_job_id: fields})[encrypt_job_id]
 
 
 def update_match_result(analysis_id: str, encrypt_job_id: str, **fields: Any) -> dict[str, Any]:
@@ -563,6 +568,11 @@ def update_match_result(analysis_id: str, encrypt_job_id: str, **fields: Any) ->
 def update_greeting(analysis_id: str, encrypt_job_id: str, greeting: str) -> dict[str, Any]:
     """只改 payload 里某一条 match 的招呼语，回改后的那条。"""
     return _patch_match(analysis_id, encrypt_job_id, greeting=greeting)
+
+
+def update_greetings(analysis_id: str, greetings: dict[str, str]) -> None:
+    """整批更新招呼语，任一岗位缺失时整批回滚。"""
+    _patch_matches(analysis_id, {job_id: {"greeting": text} for job_id, text in greetings.items()})
 
 
 DELIVER_SENDING = "sending"

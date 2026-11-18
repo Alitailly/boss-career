@@ -6,7 +6,6 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -65,16 +64,18 @@ def create_app() -> FastAPI:
         from . import demo
         if demo.enabled():
             body = {}
-            if request.url.path in ('/api/ai/tasks', '/api/workflow/control/tasks'):
+            if request.method == 'POST' and request.url.path in (
+                '/api/ai/tasks', '/api/workflow/control/tasks'
+            ):
                 try:
                     body = await request.json()
                 except ValueError:
                     pass  # Leave malformed JSON to the normal request validation.
                 if not isinstance(body, dict):
                     body = {}
-            if demo.blocked_request(request.url.path, request.method, request.query_params, body):
-                return JSONResponse(status_code=409, content={
-                    'ok': False, 'code': 'offline_demo', 'message': demo.MESSAGE})
+            if demo.blocked_request(request.url.path, request.method, body):
+                error = demo.OfflineDemoError()
+                return JSONResponse(status_code=error.status_code, content=error.payload())
         return await call_next(request)
 
     @app.exception_handler(WebError)
@@ -159,7 +160,7 @@ def create_app() -> FastAPI:
         async def _no_cache_static(request: Request, call_next):  # noqa: ANN202
             """静态与接口响应加禁缓存头，避免跨文件版本错配与旧登录态。"""
             response = await call_next(request)
-            if request.url.path.endswith(".js"):
+            if request.url.path.startswith("/static/") and request.url.path.endswith(".js"):
                 response.headers["Content-Type"] = "application/javascript; charset=utf-8"
             if request.url.path.startswith("/static/") or request.url.path == "/":
                 response.headers["Cache-Control"] = "no-cache, must-revalidate"
@@ -174,7 +175,7 @@ def create_app() -> FastAPI:
 
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str):  # noqa: ANN202
-            """未命中路径回 SPA 壳；真静态文件直接回文件。
+            """未命中路径回 SPA 壳；静态资源由 /static 挂载处理。
 
             例外是 `/api/*`：没命中就回 JSON 404 / 405。以前这类路径会拿到
             200 的首页 HTML，调用方（尤其接手的 AI）会把它当成"接口成功但返回
@@ -203,9 +204,6 @@ def create_app() -> FastAPI:
                              "hint": "接口清单见 GET /api/ai/manifest，"
                                      "完整 OpenAPI 见 GET /api/openapi.json"},
                 )
-            candidate = static_dir / full_path
-            if full_path and candidate.is_file():
-                return FileResponse(candidate)
             return FileResponse(static_dir / "index.html")
 
     return app

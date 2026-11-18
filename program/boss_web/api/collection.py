@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
+from ..demo import require_platform
 from ..errors import ConflictError, NotFoundError, UpstreamError, ValidationWebError
 from ..services import blacklist
 from ..services.collection_config_store import (
@@ -109,6 +110,7 @@ def get_collection_expects() -> dict[str, Any]:
 
     from ..services.troubleshoot import humanize
 
+    require_platform()
     try:
         client = create_client()
         expects = client.fetch_expect_list()

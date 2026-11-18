@@ -15,6 +15,8 @@ from boss_filter import (
 )
 from boss_filter.search import JobSearchFilter
 
+from ..demo import require_platform
+
 router = APIRouter()
 
 
@@ -49,6 +51,8 @@ class SearchFilterBody(BaseModel):
 def conditions(refresh: bool = Query(False)) -> dict[str, Any]:
     """程序内置/本地选项表；仅显式 refresh=true 才进行在线维护。"""
     from boss_filter.validation import cached_catalog
+    if refresh:
+        require_platform()
     doc = cached_catalog(refresh=refresh)
     data = dict(doc["options"])
     from boss_filter.precision import positions
@@ -69,6 +73,8 @@ def location_conditions(city: str = Query(...), refresh: bool = Query(False)) ->
     """City-specific public catalog. Offline by default; refresh is explicit maintenance."""
     from boss_filter.precision import locations, refresh_locations, location_options
     from boss_filter.validation import FilterValidationError
+    if refresh:
+        require_platform()
     try:
         doc = refresh_locations(city) if refresh else locations(city)
         return {**doc, 'multiBusinessDistrict': location_options(doc['city'], 'multiBusinessDistrict'),
