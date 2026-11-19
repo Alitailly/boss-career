@@ -224,6 +224,29 @@ class DemoTests(unittest.TestCase):
                 self.assertFalse(queue.exists())
 
                 submission = {'results': [first, second]}
+                from boss_core import external
+                from boss_core import delivery_ledger
+                from boss_core.jsonio import write_json
+
+                with patch.object(delivery_ledger, 'append_greeting_batch', side_effect=OSError('queue unavailable')):
+                    unavailable = client.post(submit_url, json=submission)
+                self.assertEqual(unavailable.status_code, 503, unavailable.text)
+                self.assertFalse(queue.exists())
+                for saved in submission['results']:
+                    self.assertEqual(load_analysis(analyses[saved['job_id']])['matches'][0]['greeting'], saved['text'])
+
+                def interrupt_after_applying(path, value):
+                    if value.get('status') == 'applied':
+                        raise OSError('simulated interruption before saving work status')
+                    return write_json(path, value)
+
+                with patch.object(external, 'write_json', side_effect=interrupt_after_applying):
+                    interrupted = client.post(submit_url, json=submission)
+                self.assertEqual(interrupted.status_code, 503, interrupted.text)
+                self.assertEqual(len(queue.read_text(encoding='utf-8').splitlines()), 2)
+                conflicting = client.post(submit_url, json={'results': [
+                    {**first, 'text': draft + '谢谢。'}, second]})
+                self.assertEqual(conflicting.status_code, 409, conflicting.text)
                 result = call('POST', submit_url, json=submission)
                 self.assertEqual(result['status'], 'applied')
                 self.assertEqual(work['analysis_by_job'], analyses)

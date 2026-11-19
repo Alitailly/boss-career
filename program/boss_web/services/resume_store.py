@@ -575,14 +575,54 @@ def update_greeting(analysis_id: str, encrypt_job_id: str, greeting: str) -> dic
     return _patch_match(analysis_id, encrypt_job_id, greeting=greeting)
 
 
-def update_greetings(greetings: dict[str, dict[str, str]]) -> None:
-    """在同一事务内更新多份分析中的招呼语。"""
+def load_greeting_batch(work_id: str, result_hash: str) -> dict[str, Any] | None:
+    """读取已保存的批次，重试时只接受同一份提交。"""
+    from boss_core.errors import Conflict
+
+    row = boss_db.acquire().execute(
+        "SELECT result_hash, payload, published FROM external_greeting_batches WHERE work_id=?", (work_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row["result_hash"] != result_hash:
+        raise Conflict("这个工作项已有保存的招呼语，请用同一份提交重试", field="work_id")
+    return {**json.loads(row["payload"]), "published": bool(row["published"])}
+
+
+def save_greeting_batch(work_id: str, result_hash: str, batch: dict[str, Any]) -> None:
+    """在同一事务内写入正文与待写入审核台账的事件。"""
+    updates: dict[str, dict[str, dict[str, str]]] = {}
+    for event in batch["events"]:
+        updates.setdefault(event["analysis_id"], {})[event["job_id"]] = {"greeting": event["text"]}
     conn = boss_db.acquire()
     with conn:
         conn.execute("BEGIN IMMEDIATE")
-        for analysis_id, drafts in greetings.items():
-            updates = {job_id: {"greeting": text} for job_id, text in drafts.items()}
-            _apply_match_patches(conn, analysis_id, load_analysis(analysis_id), updates)
+        conn.execute("INSERT INTO external_greeting_batches (work_id, result_hash, payload) VALUES (?, ?, ?)",
+                     (work_id, result_hash, json.dumps(batch, ensure_ascii=False)))
+        for analysis_id, fields in updates.items():
+            _apply_match_patches(conn, analysis_id, load_analysis(analysis_id), fields)
+
+
+def publish_greeting_batch(path: Path, work_id: str, events: list[dict[str, Any]]) -> None:
+    """写入台账前复核正文，确保恢复时不会把后来的修改换成旧稿。"""
+    from boss_core.delivery_ledger import append_greeting_batch
+    from boss_core.errors import Conflict
+
+    conn = boss_db.acquire()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = {}
+        for analysis_id in dict.fromkeys(event["analysis_id"] for event in events):
+            try:
+                analysis = load_analysis(analysis_id)
+            except FileNotFoundError:
+                analysis = {}
+            current[analysis_id] = {item.get("encrypt_job_id"): item.get("greeting")
+                                    for item in analysis.get("matches") or [] if isinstance(item, dict)}
+        superseded = any(current[e["analysis_id"]].get(e["job_id"]) != e["text"] for e in events)
+        if not append_greeting_batch(path, work_id, events, allow_new=not superseded):
+            raise Conflict("稿件已被修改，请重新准备写稿工作项", field="work_id")
+        conn.execute("UPDATE external_greeting_batches SET published=1 WHERE work_id=?", (work_id,))
 
 
 DELIVER_SENDING = "sending"

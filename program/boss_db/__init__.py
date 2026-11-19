@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS analysis (
 
 CREATE INDEX IF NOT EXISTS idx_analysis_created ON analysis(created_at);
 
+CREATE TABLE IF NOT EXISTS external_greeting_batches (
+    work_id     TEXT PRIMARY KEY,
+    result_hash TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    published   INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     encrypt_job_id     TEXT PRIMARY KEY,
     job_name           TEXT NOT NULL,

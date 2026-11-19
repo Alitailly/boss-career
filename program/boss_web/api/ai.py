@@ -15,7 +15,7 @@ from fastapi import APIRouter, Header
 from pydantic import BaseModel, Field
 
 from boss_core import external, greeting, interview, snapshot
-from boss_core.errors import Conflict, CoreError, InvalidInput, MissingConfiguration, NotFound
+from boss_core.errors import Conflict, CoreError, Environment, InvalidInput, MissingConfiguration, NotFound
 from boss_core.jsonio import digest
 from boss_core.models import STAGES, default_plan
 from boss_core import strategies as strategies_mod
@@ -942,11 +942,17 @@ def ai_submit_work(work_id: str, payload: dict[str, Any],
     from ..services.external_apply import apply_result
 
     ws = workspace()
-    result = external.submit(
-        ws, work_id, payload, actor=_actor(x_actor),
-        jd_lookup=lambda jid: _job_for(ws, jid).get("jd") or "",
-        apply=apply_result,
-    )
+    try:
+        with ws.lock():
+            result = external.submit(
+                ws, work_id, payload, actor=_actor(x_actor),
+                jd_lookup=lambda jid: _job_for(ws, jid).get("jd") or "",
+                apply=apply_result,
+            )
+    except OSError as exc:
+        raise Environment("保存外部结果时本地文件写入失败",
+                          next_steps=["检查数据目录是否可写，再用同一份结果重试"],
+                          detail={"work_id": work_id}) from exc
     _invalidate_caches()
     return result
 

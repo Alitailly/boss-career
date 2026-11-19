@@ -219,11 +219,11 @@ def submit(ws, work_id: str, payload: dict[str, Any], *, actor: str = "ai",
                                     next_steps=["按 schema 补齐后重试"],
                                     detail={"errors": errors[:20]})
 
+    result_hash = digest(payload)
     applied: dict[str, Any] = {}
     if apply is not None:
-        applied = apply(ws, work, clean) or {}
+        applied = apply(ws, {**work, "result_hash": result_hash}, clean) or {}
 
-    result_hash = digest(payload)
     work.update({
         "status": "applied" if apply is not None else "submitted",
         "result": payload,

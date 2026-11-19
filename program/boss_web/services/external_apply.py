@@ -19,10 +19,8 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import json
 import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 
 from boss_core import compat, greeting as greeting_mod, interview as interview_mod
@@ -127,8 +125,22 @@ def _apply_matching(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
 
 
 def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    """外部招呼语 → 分析正文 + 台账 `validated` 事件（进原有待审队列）。"""
-    from .resume_store import load_analysis, update_greetings
+    """先在数据库保存正文和待写事件，重试时继续同一批。"""
+    from .resume_store import load_greeting_batch, publish_greeting_batch, save_greeting_batch
+
+    work_id, result_hash = work["work_id"], work["result_hash"]
+    queue = ws.root / "greeting" / "queue.jsonl"
+    batch = load_greeting_batch(work_id, result_hash)
+    if batch is None:
+        batch = _prepare_greeting_batch(ws, work, payload)
+        save_greeting_batch(work_id, result_hash, batch)
+    if not batch.get("published"):
+        publish_greeting_batch(queue, work_id, batch["events"])
+    return {**batch["result"], "queue": str(queue)}
+
+
+def _prepare_greeting_batch(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from .resume_store import load_analysis
 
     primary_analysis = str(work.get("analysis_id") or "")
     analysis_by_job = work.get("analysis_by_job") or {
@@ -155,7 +167,8 @@ def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
     max_chars = int(rules.get("max_len") or 200)
     fact_ids = [fid for fid, _ in compat.candidate_facts(snap)]
 
-    validated = {}
+    at = dt.datetime.now().isoformat(timespec="seconds")
+    events, drafts = [], []
     for result in payload.get("results") or []:
         jid = str(result.get("job_id"))
         text = str(result.get("text") or "").strip()
@@ -176,21 +189,12 @@ def _apply_greeting(ws, work: dict[str, Any], payload: dict[str, Any]) -> dict[s
         meta["model"] = "external-skill"
         meta["checks"] = {"format": "ok", "facts": "ok:external_review",
                           "business": "external_ai"}
-        validated[jid] = (text, meta)
-
-    greetings: dict[str, dict[str, str]] = {}
-    for jid, (text, meta) in validated.items():
-        greetings.setdefault(meta["analysis_id"], {})[jid] = text
-    update_greetings(greetings)
-    drafts = []
-    for jid, (text, meta) in validated.items():
-        _append_event(ws, "validated", jid, text=text, **meta)
-        analysis_id = meta["analysis_id"]
+        events.append({"at": at, "event": "validated", "job_id": jid, "text": text, **meta})
         drafts.append({"job_id": jid, "analysis_id": analysis_id, "draft_id": f"{analysis_id}:{jid}",
                        "sha": meta["sha"], "chars": len(text),
                        "review_pending": True})
-    return {"analysis_id": primary_analysis, "stage": "greeting", "drafts": drafts,
-            "queue": str(_queue_path(ws))}
+    return {"events": events,
+            "result": {"analysis_id": primary_analysis, "stage": "greeting", "drafts": drafts}}
 
 
 def _grounding_issues(text: str, used_facts: list[Any], snap: dict[str, Any]) -> list[dict[str, Any]]:
@@ -243,20 +247,6 @@ def _greeting_meta(analysis_id: str, item: dict[str, Any], analysis: dict[str, A
         "selection_version": str(rules.get("selection_version") or "selection-legacy"),
         "prefs_version": prefs_version,
     }
-
-
-def _queue_path(ws) -> Path:
-    return Path(ws.root) / "greeting" / "queue.jsonl"
-
-
-def _append_event(ws, event: str, job_id: str, **data: Any) -> None:
-    """按 `deliver_round_v2.append_event` 的格式追加台账事件。"""
-    path = _queue_path(ws)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = {"at": dt.datetime.now().isoformat(timespec="seconds"),
-              "event": event, "job_id": job_id, **data}
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 # ------------------------------------------------------------------ 面试
