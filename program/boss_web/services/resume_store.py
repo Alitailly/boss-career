@@ -1,7 +1,7 @@
 """简历原文与分析结果的落库。
 
 原文存 `resume` 行的 `content_md`，解析结果进 `meta`；匹配分析存 `analysis` 行。
-库是 `data/boss.db`——跟登录态 / 搜索条件 / 职位同一个。
+通过 `personal_data` 定位活动工作区的资料库。
 
 Attributes:
     SECTION_ALIASES: 章节标题别名 → 规范名。
@@ -19,11 +19,13 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 import boss_db
 
 from ..runtime import app_data_dir
+from . import personal_data
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,9 @@ def revisions_export_dir() -> Path:
     Returns:
         可写的导出目录。
     """
-    folder = app_data_dir() / "exports" / REVISION_EXPORT_DIR_NAME
+    database = personal_data.database_path()
+    base = app_data_dir() if database == boss_db.resolve_db_path() else database.parent
+    folder = base / "exports" / REVISION_EXPORT_DIR_NAME
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -257,7 +261,7 @@ def save_resume(text: str, *, filename: str = "resume.md") -> ResumeDraft:
     resume_id = "rs_" + uuid.uuid4().hex[:10]
     safe = _source_name(filename)
     created = time.time()
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         conn.execute(
             "INSERT INTO resume (resume_id, title, source_name, created_at, content_md, meta) "
@@ -285,7 +289,7 @@ def save_resume(text: str, *, filename: str = "resume.md") -> ResumeDraft:
 
 def load_resume(resume_id: str) -> ResumeDraft:
     """读一份简历骨架；不存在抛 `FileNotFoundError`。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     row = conn.execute(
         "SELECT * FROM resume WHERE resume_id = ?", (resume_id,)
     ).fetchone()
@@ -296,7 +300,7 @@ def load_resume(resume_id: str) -> ResumeDraft:
 
 def list_resumes() -> list[dict[str, Any]]:
     """列出简历摘要；LLM 结果只报「解析过没有」。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     rows = conn.execute(
         "SELECT * FROM resume ORDER BY created_at DESC"
     ).fetchall()
@@ -325,7 +329,7 @@ def list_resumes() -> list[dict[str, Any]]:
 
 def delete_resume(resume_id: str) -> bool:
     """删除简历；删到了返回 True。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         cur = conn.execute("DELETE FROM resume WHERE resume_id = ?", (resume_id,))
     return cur.rowcount > 0
@@ -336,7 +340,7 @@ def save_llm_parse(resume_id: str, llm_payload: dict[str, Any]) -> dict[str, Any
 
     只覆盖 `meta.llm`，其余 meta 键原样保留。
     """
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     row = conn.execute(
         "SELECT meta FROM resume WHERE resume_id = ?", (resume_id,)
     ).fetchone()
@@ -359,7 +363,7 @@ def save_llm_parse(resume_id: str, llm_payload: dict[str, Any]) -> dict[str, Any
 
 def confirm_llm_parse(resume_id: str, token: str, source_sha: str):
     import hashlib
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         conn.execute('BEGIN IMMEDIATE')
         row = conn.execute('SELECT meta, content_md FROM resume WHERE resume_id=?', (resume_id,)).fetchone()
@@ -377,7 +381,7 @@ def confirm_llm_parse(resume_id: str, token: str, source_sha: str):
 
 def load_llm_parse(resume_id: str) -> dict[str, Any] | None:
     """读 `meta.llm`；没有解析过 → `None`。简历不存在 → `FileNotFoundError`。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     row = conn.execute(
         "SELECT meta FROM resume WHERE resume_id = ?", (resume_id,)
     ).fetchone()
@@ -406,7 +410,7 @@ def save_analysis(payload: dict[str, Any]) -> str:
     payload["analysis_id"] = analysis_id
     matches = payload.get("matches") or []
     llm = payload.get("llm") or {}
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         conn.execute(
             "INSERT INTO analysis (analysis_id, resume_id, resume_title, created_at, "
@@ -430,7 +434,7 @@ def save_analysis(payload: dict[str, Any]) -> str:
 
 def load_analysis(analysis_id: str) -> dict[str, Any]:
     """读整包分析 payload；不存在抛 `FileNotFoundError`。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     row = conn.execute(
         "SELECT payload FROM analysis WHERE analysis_id = ?", (analysis_id,)
     ).fetchone()
@@ -450,7 +454,7 @@ def create_running_analysis(payload: dict[str, Any]) -> str:
 @contextmanager
 def _analysis_write(analysis_id: str):
     """在读 payload 前取得写事务，避免增量结果与 PATCH 互相覆盖。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         yield conn, load_analysis(analysis_id)
@@ -579,7 +583,7 @@ def load_greeting_batch(work_id: str, result_hash: str) -> dict[str, Any] | None
     """读取已保存的批次，重试时只接受同一份提交。"""
     from boss_core.errors import Conflict
 
-    row = boss_db.acquire().execute(
+    row = personal_data.acquire().execute(
         "SELECT result_hash, payload, published FROM external_greeting_batches WHERE work_id=?", (work_id,)
     ).fetchone()
     if row is None:
@@ -594,7 +598,7 @@ def save_greeting_batch(work_id: str, result_hash: str, batch: dict[str, Any]) -
     updates: dict[str, dict[str, dict[str, str]]] = {}
     for event in batch["events"]:
         updates.setdefault(event["analysis_id"], {})[event["job_id"]] = {"greeting": event["text"]}
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("INSERT INTO external_greeting_batches (work_id, result_hash, payload) VALUES (?, ?, ?)",
@@ -608,7 +612,7 @@ def publish_greeting_batch(path: Path, work_id: str, events: list[dict[str, Any]
     from boss_core.delivery_ledger import append_greeting_batch
     from boss_core.errors import Conflict
 
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         current = {}
@@ -667,7 +671,7 @@ def match_index(prefer_resume_id: str = "") -> dict[str, dict[str, Any]]:
     一次 SQL 取完，别为 800 个岗位打 800 次 HTTP——那会让 /sendable 跑到 40 秒，
     页面看起来像"必须刷新才出数据"。
     """
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     rows = conn.execute(
         "SELECT analysis_id, resume_id, resume_title, created_at, payload FROM analysis "
         "WHERE status IN ('done', 'running')"
@@ -705,7 +709,7 @@ def match_index(prefer_resume_id: str = "") -> dict[str, dict[str, Any]]:
 
 def list_analyses() -> list[dict[str, Any]]:
     """列出分析摘要（不含整包 payload）。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     rows = conn.execute(
         "SELECT analysis_id, resume_id, resume_title, created_at, job_count, "
         "top_score, status, model FROM analysis ORDER BY created_at DESC"
@@ -733,7 +737,7 @@ def analyses_cover() -> dict[str, int]:
     所以明细之和会大于覆盖数——2026-11-01 用户看到 138 条对 1000 多个分数觉得矛盾，
     就是因为面板只给了批次这一个数。三个数一起给，才对得上。
     """
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     rows = conn.execute(
         "SELECT payload FROM analysis WHERE status IN ('done', 'running')"
     ).fetchall()
@@ -758,7 +762,7 @@ def analyses_cover() -> dict[str, int]:
 
 def delete_analysis(analysis_id: str) -> bool:
     """删除分析；删到了返回 True。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         cur = conn.execute("DELETE FROM analysis WHERE analysis_id = ?", (analysis_id,))
     return cur.rowcount > 0
@@ -870,7 +874,7 @@ def create_revision(
         optimization_prompt: 自由模式的优化提示词（targeted 模式可为空）。
     """
     now = time.time()
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         conn.execute(
             "INSERT INTO resume_revisions (revision_id, resume_id, resume_title, "
@@ -899,7 +903,7 @@ def create_revision(
 
 def load_revision(revision_id: str) -> dict[str, Any]:
     """读一条简历优化（全文）；不存在抛 `FileNotFoundError`。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     row = conn.execute(
         "SELECT * FROM resume_revisions WHERE revision_id = ?", (revision_id,)
     ).fetchone()
@@ -910,7 +914,7 @@ def load_revision(revision_id: str) -> dict[str, Any]:
 
 def list_revisions(*, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
     """简历优化记录列表（摘要）；返回 `(items, total)`，最近的在前。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     total_row = conn.execute("SELECT COUNT(*) AS n FROM resume_revisions").fetchone()
     total = int(total_row["n"] or 0)
     rows = conn.execute(
@@ -930,7 +934,7 @@ def update_revision_result(
     error: str = "",
 ) -> bool:
     """把一次生成结果原地写回草稿行（只改不增）；返回是否真的更新到。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         cur = conn.execute(
             "UPDATE resume_revisions SET updated_at = ?, status = ?, revised_md = ?, "
@@ -959,7 +963,7 @@ def mark_revision_status(revision_id: str, status: str, *, error: str = "") -> b
     Returns:
         有没有真的更新到行。
     """
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         cur = conn.execute(
             "UPDATE resume_revisions SET updated_at = ?, status = ?, error = ? "
@@ -977,7 +981,7 @@ def mark_revision_saved(
     export_format: str,
 ) -> bool:
     """确认保存成功后，把状态置 `saved` 并记写盘路径 / 新简历 id。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         cur = conn.execute(
             "UPDATE resume_revisions SET updated_at = ?, status = ?, saved_path = ?, "
@@ -996,7 +1000,7 @@ def mark_revision_saved(
 
 def delete_revision(revision_id: str) -> bool:
     """删一条修改记录（只删库内记录，不删已写盘文件）；返回是否删到。"""
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         cur = conn.execute(
             "DELETE FROM resume_revisions WHERE revision_id = ?", (revision_id,)

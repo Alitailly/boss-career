@@ -27,6 +27,7 @@ from typing import Any, Sequence
 
 from ..errors import ConflictError, NotFoundError, ValidationWebError
 from . import interview_generator as IG
+from . import personal_data
 from .llm_client import LLMClient
 from .llm_config_store import load_config
 from .resume_store import load_analysis, load_resume
@@ -525,9 +526,7 @@ def _resolve_targets(
 
 def _analysis_index() -> dict[str, dict[str, Any]]:
     """职位 ID → 最近一条含它的分析上下文（新分析优先，只认第一次命中）。"""
-    import boss_db
-
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     rows = conn.execute(
         "SELECT analysis_id, payload FROM analysis ORDER BY created_at DESC"
     ).fetchall()
@@ -555,9 +554,7 @@ def _analysis_index() -> dict[str, dict[str, Any]]:
 
 def _latest_resume_id() -> str:
     """库里最新一份简历的 id；没有简历回空串。"""
-    import boss_db
-
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     row = conn.execute(
         "SELECT resume_id FROM resume ORDER BY created_at DESC LIMIT 1"
     ).fetchone()
@@ -643,10 +640,8 @@ def save_questions(
     Returns:
         写入条数。
     """
-    import boss_db
-
     now = time.time()
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     with conn:
         if replace:
             conn.execute(
@@ -679,9 +674,7 @@ def load_existing_questions(
     encrypt_job_id: str, *, site: str = SITE
 ) -> list[str]:
     """读一岗已有题目正文（补题去重用）。"""
-    import boss_db
-
-    rows = boss_db.acquire().execute(
+    rows = personal_data.acquire().execute(
         "SELECT question_text FROM interview_questions "
         "WHERE encrypt_job_id = ? AND site = ? ORDER BY created_at",
         (encrypt_job_id, site),

@@ -415,9 +415,9 @@ def clear_report_cache() -> None:
 
 def _scored_by_resume() -> dict[str, set[str]]:
     """每个岗位被哪些简历打过分的映射（只读一次库，别在循环里反复解析 payload）。"""
-    import boss_db
+    from ..services import personal_data
 
-    rows = boss_db.acquire().execute(
+    rows = personal_data.acquire().execute(
         "SELECT resume_id, payload FROM analysis WHERE status IN ('done', 'running')"
     ).fetchall()
     per_job: dict[str, set[str]] = {}

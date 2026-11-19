@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 import boss_db
 from ..errors import NotFoundError, ValidationWebError
+from ..services import personal_data
 from ..services.interview_generation_task import interview_tasks
 
 router = APIRouter()
@@ -182,7 +183,7 @@ def _question_count_map(job_ids: list[str]) -> dict[str, int]:
     if not job_ids:
         return {}
     marks = ",".join("?" for _ in job_ids)
-    rows = boss_db.acquire().execute(
+    rows = personal_data.acquire().execute(
         f"SELECT encrypt_job_id, COUNT(*) AS n "
         f"FROM interview_questions WHERE encrypt_job_id IN ({marks}) "
         f"GROUP BY encrypt_job_id",
@@ -280,11 +281,11 @@ def list_generation_records(
         args.append(f"%{title.strip()}%")
     where_sql = " AND ".join(where)
 
-    conn = boss_db.acquire()
+    conn, jobs = personal_data.acquire_with_jobs()
     total = int(
         conn.execute(
             f"SELECT COUNT(*) AS n FROM (SELECT q.encrypt_job_id "
-            f"FROM interview_questions q LEFT JOIN jobs j ON j.encrypt_job_id = q.encrypt_job_id "
+            f"FROM interview_questions q LEFT JOIN {jobs} j ON j.encrypt_job_id = q.encrypt_job_id "
             f"WHERE {where_sql} GROUP BY q.encrypt_job_id)",
             args,
         ).fetchone()["n"]
@@ -297,7 +298,7 @@ def list_generation_records(
         f"COUNT(*) AS question_count, "
         f"MIN(q.created_at) AS created_at, MAX(q.updated_at) AS updated_at "
         f"FROM interview_questions q "
-        f"LEFT JOIN jobs j ON j.encrypt_job_id = q.encrypt_job_id "
+        f"LEFT JOIN {jobs} j ON j.encrypt_job_id = q.encrypt_job_id "
         f"WHERE {where_sql} GROUP BY q.encrypt_job_id "
         f"ORDER BY MAX(q.updated_at) DESC LIMIT ? OFFSET ?",
         [*args, int(limit), int(offset)],
@@ -329,7 +330,7 @@ def context(encrypt_job_id: str = Query("")) -> dict[str, Any]:
     """
     if not encrypt_job_id.strip():
         raise ValidationWebError("缺少 encrypt_job_id")
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     rows = conn.execute(
         "SELECT analysis_id, payload FROM analysis ORDER BY created_at DESC"
     ).fetchall()
@@ -377,7 +378,7 @@ def summary(encrypt_job_ids: str = Query("")) -> dict[str, Any]:
     ids = [s.strip() for s in encrypt_job_ids.split(",") if s.strip()]
     if not ids:
         return {"items": {}}
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     marks = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"SELECT encrypt_job_id, COUNT(*) AS n "
@@ -439,7 +440,7 @@ def list_questions(
         "frequent": "is_frequent DESC, created_at DESC",
     }[sort]
 
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     rows = conn.execute(
         f"SELECT * FROM interview_questions WHERE {' AND '.join(where)} ORDER BY {order}",
         args,
@@ -480,7 +481,7 @@ def update_question(question_id: int, req: UpdateQuestionRequest) -> dict[str, A
     Returns:
         改后的题目。
     """
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     row = conn.execute(
         "SELECT * FROM interview_questions WHERE id = ?", (question_id,)
     ).fetchone()
@@ -528,7 +529,7 @@ def _load_for_export(
         args.append(encrypt_job_id.strip())
     if not where:
         raise ValidationWebError("analysis_id 和 encrypt_job_id 至少给一个")
-    conn = boss_db.acquire()
+    conn = personal_data.acquire()
     rows = conn.execute(
         f"SELECT * FROM interview_questions WHERE {' AND '.join(where)} "
         "ORDER BY encrypt_job_id, CASE difficulty WHEN '高级' THEN 3 "

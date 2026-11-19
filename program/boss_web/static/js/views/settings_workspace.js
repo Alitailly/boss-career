@@ -33,7 +33,7 @@ export async function renderWorkspace(root) {
     <div class="flex between center gap-12 wrap mb-16">
       <div>
         <h2 class="card-title">工作区</h2>
-        <div class="card-sub">简历、求职方案、台账都放这个目录里。换目录不会删旧数据，只是让程序改看另一份。</div>
+        <div class="card-sub">每个工作区使用各自的简历、评分、面试题、方案和台账。岗位库、平台登录和模型设置由本安装共享。</div>
       </div>
       <div class="btn-row">
         <button class="btn" id="ws-refresh" type="button">重新检测</button>
@@ -42,6 +42,7 @@ export async function renderWorkspace(root) {
     </div>
     <div class="settings-scroll">
       <div class="banner info" id="ws-status">正在读取…</div>
+      <div class="banner info" id="ws-pending" hidden></div>
       <div class="row-2">
         <div class="field">
           <label for="ws-path">工作区目录</label>
@@ -88,11 +89,15 @@ export async function renderWorkspace(root) {
       box.className = "banner warn";
       box.textContent = `工作区已建立，但阶段还跑不了${missing.length ? `：缺 ${missing.join("、")}` : ""}。看下面的「下一步」。`;
     }
+    const pending = $("ws-pending");
+    const nextDir = state?.next_dir;
+    pending.hidden = !nextDir;
+    pending.textContent = nextDir ? `已保存 ${nextDir}。关闭并重新启动 BossCareer 后切换。` : "";
     const path = $("ws-path");
     const showDir = configured || (state && state.source !== "default");
-    if (path) path.value = showDir ? (state.dir || "") : "";
+    if (path) path.value = nextDir || (showDir ? (state.dir || "") : "");
     $("ws-default").textContent = `默认：${(state && state.default_dir) || ""}（留空就用它）`;
-    $("ws-code").value = (state && state.code_dir) || "";
+    $("ws-code").value = (nextDir ? state.next_code_dir : state?.code_dir) || "";
     const scripts = (state && state.scripts) || {};
     const lacking = Object.entries(scripts).filter(([, ok]) => !ok).map(([name]) => name);
     if (state && state.code_dir) {
@@ -140,6 +145,10 @@ export async function renderWorkspace(root) {
     try {
       const saved = await api.post("/api/system/workspace", { path, code, confirmed: true });
       fill(saved);
+      if (saved.restart_required) {
+        toast("已保存工作区选择，重新启动 BossCareer 后生效。", "ok");
+        return;
+      }
       const ws = saved && saved.dir ? `：${saved.dir}` : "";
       const ok = saved && saved.stage === "executable";
       toast(

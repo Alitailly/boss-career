@@ -5,18 +5,18 @@
 1. 解析数据目录（复用 :mod:`boss_web.runtime`，与 `boss.db` 落在同一处）；
 2. 给出默认工作区目录 ``<数据目录>/workspace``；
 3. 把用户选过的路径写进 ``<数据目录>/launch.json``，下次启动自动生效；
-4. 首次配置时用 :class:`boss_core.workspace.Workspace` 建工作区，并设置进程内环境变量。
+4. 首次配置时建工作区并设置进程内环境变量；换工作区时保存选择，重启后生效。
 
 优先级一句话：**环境变量 > launch.json > 默认目录**。
 :func:`apply_saved` 只补空缺（等价于对每个变量做 ``os.environ.setdefault``），
 部署 / 测试里显式设过的 ``BOSS_WORKFLOW_DIR`` 不会被悄悄覆盖；:func:`configure`
-是用户主动点的按钮，才会覆盖进程内变量。
+首次绑定时会设置进程内变量。
 
 ``launch.json`` 的形状::
 
     {"workspace": "<绝对路径>", "code": "<绝对路径或空串>", "updated_at": "..."}
 
-它**不是**工作区元信息：简历、方案、审计记录都在 ``workspace.json`` 那边。
+工作区元信息另存在 ``workspace.json``，个人数据由 :mod:`personal_data` 定位。
 """
 
 from __future__ import annotations
@@ -152,6 +152,8 @@ def _read_launch() -> dict[str, Any]:
 
 def _write_launch(folder: Path, code: Path | None) -> Path:
     """原子写 ``launch.json``；返回文件路径。"""
+    from boss_core.jsonio import write_json
+
     path = launch_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -159,9 +161,7 @@ def _write_launch(folder: Path, code: Path | None) -> Path:
         "code": str(code) if code is not None else "",
         "updated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temp, path)
+    write_json(path, payload)
     return path
 
 
@@ -298,6 +298,8 @@ def current() -> dict[str, Any]:
         source = "saved"
 
     configured = has_workspace(folder)
+    next_dir = _resolve(saved_dir) if saved_dir is not None else folder
+    switching = next_dir != folder
     code, code_source = _resolve_code(folder, saved)
     state = {
         "configured": configured,
@@ -313,6 +315,9 @@ def current() -> dict[str, Any]:
         "launch_file": str(launch_file()),
         "default_dir": str(default_workspace_dir()),
         "data_dir": str(app_data_dir()),
+        "restart_required": switching,
+        "next_dir": str(next_dir) if switching else "",
+        "next_code_dir": str(saved.get("code") or "") if switching else "",
     }
     state.update(readiness(state))
     return state
@@ -470,6 +475,7 @@ def configure(
     from boss_core.workspace import Workspace
 
     from ..errors import ConflictError, ValidationWebError
+    from . import personal_data
 
     raw = str(target or "").strip()
     folder = Path(raw).expanduser() if raw else default_workspace_dir()
@@ -479,6 +485,8 @@ def configure(
         raise ValidationWebError(f"这个路径已经是个文件，不能当工作区：{folder}")
 
     saved = _read_launch()
+    old_dir = _as_path(_env(ENV_WORKSPACE)) or _as_path(saved.get("workspace"))
+    active = _resolve(old_dir) if old_dir is not None else None
     explicit_code = _as_path(code)
     if explicit_code is not None:
         code_dir = _resolve(explicit_code)
@@ -524,10 +532,19 @@ def configure(
             _remove_quietly(folder, only_if_empty=True)
         raise ValidationWebError(f"写不了 {META_NAME}：{folder}（{exc}）") from exc
 
+    personal_data.database_path(active or folder)
+    switching = active is not None and active != folder
+    if switching:
+        # 正在处理的请求和后台任务继续使用当前工作区，直到进程重启。
+        current_code, _ = _resolve_code(active, saved)
+        os.environ[ENV_WORKSPACE] = str(active)
+        if current_code is not None:
+            os.environ[ENV_CODE] = str(current_code)
     launch = _write_launch(folder, code_dir)
-    os.environ[ENV_WORKSPACE] = str(folder)
-    if code_dir is not None:
-        os.environ[ENV_CODE] = str(code_dir)
+    if not switching:
+        os.environ[ENV_WORKSPACE] = str(folder)
+        if code_dir is not None:
+            os.environ[ENV_CODE] = str(code_dir)
 
     result = current()
     result.update({
@@ -536,5 +553,5 @@ def configure(
         "created": created_dir,
         "launch_file": str(launch),
     })
-    logger.info("工作区已配置：%s（新建=%s）", folder, not existed_meta)
+    logger.info("工作区已配置：%s（新建=%s，需要重启=%s）", folder, not existed_meta, switching)
     return result
